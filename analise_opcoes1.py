@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (Final)", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Radar Opções Master (Interface Pro)", page_icon="🦅", layout="wide")
 
 if 'dados_analise' not in st.session_state:
     st.session_state.dados_analise = []
@@ -103,49 +103,36 @@ def analisar_timeframe_individual(df, periodo_nome):
     score = 0
     motivos = []
     
-    # 1. Tendência
     if (last['Close'] > last['EMA21']) and (last['EMA21'] > last['SMA50']):
-        vies = "ALTA"
-        score += 2
-        motivos.append("Tendência Alta")
+        vies = "ALTA"; score += 2; motivos.append("Tendência Alta")
     elif (last['Close'] < last['EMA21']) and (last['EMA21'] < last['SMA50']):
-        vies = "BAIXA"
-        score += 2
-        motivos.append("Tendência Baixa")
-    else:
-        motivos.append("Lateral")
+        vies = "BAIXA"; score += 2; motivos.append("Tendência Baixa")
+    else: motivos.append("Lateral")
 
-    # 2. Momentum
     macd_ok = False
     if vies == "ALTA" and last['MACD'] > last['MACD_Signal']:
-        score += 1
-        macd_ok = True
-        motivos.append("MACD Compra")
+        score += 1; macd_ok = True; motivos.append("MACD Compra")
     elif vies == "BAIXA" and last['MACD'] < last['MACD_Signal']:
-        score += 1
-        macd_ok = True
-        motivos.append("MACD Venda")
+        score += 1; macd_ok = True; motivos.append("MACD Venda")
 
-    # 3. Price Action
     pivots_low, pivots_high = encontrar_pivos(df, window=5)
     
+    # Suportes
     recent_lows = pivots_low.tail(30).values 
     suportes_abaixo = [p for p in recent_lows if p < preco_atual]
     sup_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
-    
     sup_forte = df['Low'].tail(120).min()
     if abs(sup_imediato - sup_forte) / sup_forte < 0.01: sup_imediato = sup_forte
 
+    # Resistências
     recent_highs = pivots_high.tail(30).values
     resistencias_acima = [p for p in recent_highs if p > preco_atual]
     res_imediata = min(resistencias_acima) if resistencias_acima else (preco_atual * 1.1)
-    
     res_forte = df['High'].tail(120).max()
     if abs(res_imediata - res_forte) / res_forte < 0.01: res_imediata = res_forte
 
     pa_status = "Dentro do Canal"
-    rompimento = False
-    perda = False
+    rompimento, perda = False, False
     
     if vies == "ALTA":
         if preco_atual > res_imediata: pa_status, rompimento = "Rompimento Intermediário ⚠️", True
@@ -179,12 +166,9 @@ def analisar_ativo_completo(ticker, dados_dict):
     obs_final = []
     breakdown = {"Tendência Diária": 0, "MACD Diário": 0, "Confluência Semanal": 0, "Confluência Intraday": 0, "Price Action": 0}
 
-    # Pontuação
     if analise_d['Viés'] == "ALTA":
         score_final += 2; breakdown["Tendência Diária"] = 2
-        
         if analise_d['MACD_OK']: score_final += 1; breakdown["MACD Diário"] = 1
-
         if analise_w['Viés'] in ["ALTA", "NEUTRO"]: 
             decisao_final = "ALTA"
             if analise_w['Viés'] == "ALTA": score_final += 1; breakdown["Confluência Semanal"] = 1; obs_final.append("Semanal ✅")
@@ -193,9 +177,7 @@ def analisar_ativo_completo(ticker, dados_dict):
     
     elif analise_d['Viés'] == "BAIXA":
         score_final += 2; breakdown["Tendência Diária"] = 2
-        
         if analise_d['MACD_OK']: score_final += 1; breakdown["MACD Diário"] = 1
-
         if analise_w['Viés'] in ["BAIXA", "NEUTRO"]:
             decisao_final = "BAIXA"
             if analise_w['Viés'] == "BAIXA": score_final += 1; breakdown["Confluência Semanal"] = 1; obs_final.append("Semanal ✅")
@@ -213,49 +195,74 @@ def analisar_ativo_completo(ticker, dados_dict):
         elif cond_vol == "alta": setup_sugerido = "TRAVA"
         else: setup_sugerido = "TRAVA OU SECO"
 
-    # === STOP TÉCNICO (1.5x ATR) ===
     atr = last_d['ATR']
     stop_tecnico = 0.0
     alvo_tecnico = 0.0
+    payoff = 0.0 # Risco x Retorno
     
     if decisao_final == "ALTA":
         stop_tecnico = last_d['Close'] - (1.5 * atr) 
         alvo_tecnico = last_d['Close'] + (3.0 * atr)
+        risco = last_d['Close'] - stop_tecnico
+        retorno = alvo_tecnico - last_d['Close']
+        if risco > 0: payoff = retorno / risco
+        
     elif decisao_final == "BAIXA":
         stop_tecnico = last_d['Close'] + (1.5 * atr)
         alvo_tecnico = last_d['Close'] - (3.0 * atr)
+        risco = stop_tecnico - last_d['Close']
+        retorno = last_d['Close'] - alvo_tecnico
+        if risco > 0: payoff = retorno / risco
 
     return {
         "Ativo": ticker, "Preço": last_d['Close'], "Direção": decisao_final,
         "Score": score_final, "Breakdown": breakdown, "Setup": setup_sugerido,
-        "Volatilidade": vol_status, "Stop_Tecnico": stop_tecnico, "Alvo": alvo_tecnico,
+        "Volatilidade": vol_status, "Stop_Tecnico": stop_tecnico, "Alvo": alvo_tecnico, "Payoff": payoff,
         "Observacoes": ", ".join(obs_final) if obs_final else "Aguardando",
-        "analise_w": analise_w, "analise_d": analise_d, "analise_120": analise_120, "df_chart": df_d
+        "analise_w": analise_w, "analise_d": analise_d, "analise_120": analise_120, 
+        "df_chart_d": df_d, "df_chart_w": df_w, "df_chart_120": df_120 # Retorna todos os DFs para plotagem
     }
 
-def criar_grafico_mtf(df, ticker, analise_d):
+def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
+    """
+    Plota o gráfico baseado no timeframe escolhido.
+    Apenas o gráfico DIÁRIO mostra as linhas de Price Action estruturais para não poluir os outros.
+    """
     fig = go.Figure()
 
+    # Candles
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        name='Preço Daily'
+        name=f'{ticker} {tipo_grafico}'
     ))
+
+    # Médias (Presentes em todos)
     if 'EMA21' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['EMA21'], mode='lines', name='EMA21', line=dict(color='cyan', width=1)))
     if 'SMA50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], mode='lines', name='SMA50', line=dict(color='yellow', width=1)))
         
-    s_imediato, s_forte = analise_d.get('Sup_Imediato', 0), analise_d.get('Sup_Forte', 0)
-    r_imediata, r_forte = analise_d.get('Res_Imediata', 0), analise_d.get('Res_Forte', 0)
+    # Price Action Estrutural (Apenas no Diário)
+    if tipo_grafico == "Diário":
+        s_imediato, s_forte = analise_d.get('Sup_Imediato', 0), analise_d.get('Sup_Forte', 0)
+        r_imediata, r_forte = analise_d.get('Res_Imediata', 0), analise_d.get('Res_Forte', 0)
+        
+        fig.add_shape(type="line", x0=df.index[-120], y0=r_forte, x1=df.index[-1], y1=r_forte, line=dict(color="#B71C1C", width=2, dash="solid"))
+        if r_imediata < r_forte: fig.add_shape(type="line", x0=df.index[-30], y0=r_imediata, x1=df.index[-1], y1=r_imediata, line=dict(color="#EF5350", width=1, dash="dash"))
+        if s_imediato > s_forte: fig.add_shape(type="line", x0=df.index[-30], y0=s_imediato, x1=df.index[-1], y1=s_imediato, line=dict(color="#66BB6A", width=1, dash="dash"))
+        fig.add_shape(type="line", x0=df.index[-120], y0=s_forte, x1=df.index[-1], y1=s_forte, line=dict(color="#1B5E20", width=2, dash="solid"))
     
-    fig.add_shape(type="line", x0=df.index[-120], y0=r_forte, x1=df.index[-1], y1=r_forte, line=dict(color="#B71C1C", width=2, dash="solid"))
-    if r_imediata < r_forte: fig.add_shape(type="line", x0=df.index[-30], y0=r_imediata, x1=df.index[-1], y1=r_imediata, line=dict(color="#EF5350", width=1, dash="dash"))
-    if s_imediato > s_forte: fig.add_shape(type="line", x0=df.index[-30], y0=s_imediato, x1=df.index[-1], y1=s_imediato, line=dict(color="#66BB6A", width=1, dash="dash"))
-    fig.add_shape(type="line", x0=df.index[-120], y0=s_forte, x1=df.index[-1], y1=s_forte, line=dict(color="#1B5E20", width=2, dash="solid"))
-    
-    fig.update_layout(title=f"Análise Daily: {ticker}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=50, r=50, t=50, b=50))
+    # Layout
+    fig.update_layout(
+        title=f"{ticker} - Gráfico {tipo_grafico}", 
+        template="plotly_dark", 
+        height=500, 
+        xaxis_rangeslider_visible=False, 
+        margin=dict(l=50, r=50, t=50, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     return fig
 
 # ================= INTERFACE =================
-st.title("🦅 Radar Opções Pro: Triple Screen & Metrics")
+st.title("🦅 Radar Opções Pro: Interface Avançada")
 
 selecao = IBXX_FULL_LIST
 if not st.sidebar.checkbox("Analisar Lista Completa", value=False):
@@ -295,54 +302,61 @@ if st.session_state.analise_realizada:
             if not df_baixa.empty: st.dataframe(df_baixa[cols], use_container_width=True, hide_index=True)
         
         st.divider()
-        st.subheader("🕵️‍♂️ Detalhamento Técnico")
+        st.subheader("🕵️‍♂️ Detalhamento & Gráficos")
         escolha = st.selectbox("Selecione Ativo:", df_res['Ativo'].tolist())
         
         if escolha:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            # 1. SCORECARD
-            st.markdown("#### 📝 Score Breakdown")
-            bk = d_ativo['Breakdown']
-            s1, s2, s3, s4, s5 = st.columns(5)
-            def fs(v): return f"✅ +{v}" if v>0 else "❌ 0"
-            s1.metric("Tendência (D)", fs(bk['Tendência Diária'])); s2.metric("MACD (D)", fs(bk['MACD Diário'])); s3.metric("Semanal (W)", fs(bk['Confluência Semanal']))
-            s4.metric("Intraday", fs(bk['Confluência Intraday'])); s5.metric("Price Action", fs(bk['Price Action']))
+            # === ABAS DE NAVEGAÇÃO ===
+            tab_chart, tab_score, tab_data = st.tabs(["📊 Gráfico Interativo", "📝 Scorecard & Métricas", "🔢 Dados Estruturais"])
             
-            st.divider()
-
-            # 2. MÉTRICAS TRIPLE SCREEN (RESTAURADO E MELHORADO)
-            st.markdown("#### 🎯 Métricas Operacionais")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Preço Atual", f"R$ {d_ativo['Preço']:.2f}")
-            m2.metric("Stop Técnico (1.5x ATR)", f"R$ {d_ativo['Stop_Tecnico']:.2f}")
-            
-            # Lógica para mostrar o nível gráfico relevante para a direção
-            if d_ativo['Direção'] == "ALTA":
-                m3.metric("Sup. Imediato (Gráfico)", f"R$ {d['Sup_Imediato']:.2f}", help="Pivô de suporte mais recente")
-            else:
-                m3.metric("Res. Imediata (Gráfico)", f"R$ {d['Res_Imediata']:.2f}", help="Pivô de resistência mais recente")
+            with tab_score:
+                st.markdown("#### 🎯 Métricas Operacionais")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Preço", f"R$ {d_ativo['Preço']:.2f}")
+                m2.metric("Stop (1.5x ATR)", f"R$ {d_ativo['Stop_Tecnico']:.2f}")
+                m3.metric("Alvo (3x ATR)", f"R$ {d_ativo['Alvo']:.2f}")
+                m4.metric("Risco/Retorno", f"1 : {d_ativo['Payoff']:.1f}", delta="Bom" if d_ativo['Payoff'] >= 2.0 else "Atenção")
                 
-            m4.metric("Alvo (3x ATR)", f"R$ {d_ativo['Alvo']:.2f}")
+                st.divider()
+                st.markdown("#### 📝 Score Breakdown")
+                bk = d_ativo['Breakdown']
+                s1, s2, s3, s4, s5 = st.columns(5)
+                def fs(v): return f"✅ +{v}" if v>0 else "❌ 0"
+                s1.metric("Tendência (D)", fs(bk['Tendência Diária'])); s2.metric("MACD (D)", fs(bk['MACD Diário'])); s3.metric("Semanal (W)", fs(bk['Confluência Semanal']))
+                s4.metric("Intraday", fs(bk['Confluência Intraday'])); s5.metric("Price Action", fs(bk['Price Action']))
 
-            st.divider()
-            
-            # 3. DETALHAMENTO ESTRUTURAL
-            col_w, col_d, col_h = st.columns(3)
-            with col_w:
-                st.info("📅 SEMANAL")
-                st.write(f"Viés: **{w['Viés']}**")
-                st.caption(f"Motivo: {w['Motivos']}")
-            with col_d:
-                st.warning("📆 DIÁRIO")
-                st.write(f"Viés: **{d['Viés']}**")
-                st.markdown("**Resistências:**")
-                st.code(f"Imed: {d['Res_Imediata']:.2f}\nForte:{d['Res_Forte']:.2f}")
-                st.markdown("**Suportes:**")
-                st.code(f"Imed: {d['Sup_Imediato']:.2f}\nForte:{d['Sup_Forte']:.2f}")
-            with col_h:
-                st.success("⏱️ 120 MIN")
-                st.write(f"Viés: **{h['Viés']}**")
-            
-            st.plotly_chart(criar_grafico_mtf(d_ativo['df_chart'], escolha, d), use_container_width=True)
+            with tab_data:
+                col_w, col_d, col_h = st.columns(3)
+                with col_w:
+                    st.info("📅 SEMANAL")
+                    st.write(f"Viés: **{w['Viés']}**")
+                    st.caption(f"Motivo: {w['Motivos']}")
+                with col_d:
+                    st.warning("📆 DIÁRIO")
+                    st.write(f"Viés: **{d['Viés']}**")
+                    st.markdown("**Resistências:**")
+                    st.code(f"Imed: {d['Res_Imediata']:.2f}\nForte:{d['Res_Forte']:.2f}")
+                    st.markdown("**Suportes:**")
+                    st.code(f"Imed: {d['Sup_Imediato']:.2f}\nForte:{d['Sup_Forte']:.2f}")
+                with col_h:
+                    st.success("⏱️ 120 MIN")
+                    st.write(f"Viés: **{h['Viés']}**")
+
+            with tab_chart:
+                # SELETOR DE TIMEFRAME
+                col_sel, _ = st.columns([1, 3])
+                with col_sel:
+                    tf_selecionado = st.radio("Selecione o Tempo Gráfico:", ["Semanal", "Diário", "120 Minutos"], horizontal=True)
+                
+                # LÓGICA DE EXIBIÇÃO
+                if tf_selecionado == "Semanal":
+                    fig = criar_grafico_dinamico(d_ativo['df_chart_w'], escolha, d, "Semanal")
+                elif tf_selecionado == "Diário":
+                    fig = criar_grafico_dinamico(d_ativo['df_chart_d'], escolha, d, "Diário")
+                else:
+                    fig = criar_grafico_dinamico(d_ativo['df_chart_120'], escolha, d, "120 Minutos")
+                
+                st.plotly_chart(fig, use_container_width=True)

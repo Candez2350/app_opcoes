@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (Layout Final)", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Radar Opções Master (Filtro Score 3+)", page_icon="🦅", layout="wide")
 
 if 'dados_analise' not in st.session_state:
     st.session_state.dados_analise = []
@@ -57,14 +57,8 @@ def obter_dados_multi_timeframe(ticker):
     if not ticker.endswith(".SA"): ticker += ".SA"
     try:
         t = Ticker(ticker)
-        
-        # 1. Diário (1 ano)
         df_d = tratar_dataframe(t.history(period='1y', interval='1d'))
-        
-        # 2. Semanal (2 anos) - Forçando explicitamente o intervalo semanal
         df_w = tratar_dataframe(t.history(period='2y', interval='1wk'))
-        
-        # 3. Intraday (60 min -> Resample 120 min)
         df_h = tratar_dataframe(t.history(period='60d', interval='60m'))
         
         df_120 = None
@@ -73,8 +67,6 @@ def obter_dados_multi_timeframe(ticker):
             df_120 = df_h.resample('2h').agg(agg_dict).dropna()
 
         if df_d is None or len(df_d) < 50: return None
-        
-        # Retorna dicionário garantindo chaves únicas
         return {"D": df_d, "W": df_w, "120": df_120}
     except: return None
 
@@ -124,7 +116,6 @@ def analisar_timeframe_individual(df, periodo_nome):
         score += 1; macd_ok = True; motivos.append("MACD Venda")
 
     pivots_low, pivots_high = encontrar_pivos(df, window=5)
-    
     recent_lows = pivots_low.tail(30).values 
     suportes_abaixo = [p for p in recent_lows if p < preco_atual]
     sup_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
@@ -212,7 +203,6 @@ def analisar_ativo_completo(ticker, dados_dict):
         risco = last_d['Close'] - stop_tecnico
         retorno = alvo_tecnico - last_d['Close']
         if risco > 0: payoff = retorno / risco
-        
     elif decisao_final == "BAIXA":
         stop_tecnico = last_d['Close'] + (1.5 * atr)
         alvo_tecnico = last_d['Close'] - (3.0 * atr)
@@ -236,36 +226,21 @@ def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
         return fig
 
     fig = go.Figure()
-
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        name=f'{ticker} {tipo_grafico}'
-    ))
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name=f'{ticker}'))
 
     if 'EMA21' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['EMA21'], mode='lines', name='EMA21', line=dict(color='cyan', width=1)))
     if 'SMA50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], mode='lines', name='SMA50', line=dict(color='yellow', width=1)))
         
-    # Price Action Estrutural APENAS no gráfico Diário
     if tipo_grafico == "Diário":
         s_imediato, s_forte = analise_d.get('Sup_Imediato', 0), analise_d.get('Sup_Forte', 0)
         r_imediata, r_forte = analise_d.get('Res_Imediata', 0), analise_d.get('Res_Forte', 0)
         
-        # Resistências (Vermelho)
         fig.add_shape(type="line", x0=df.index[-120], y0=r_forte, x1=df.index[-1], y1=r_forte, line=dict(color="#B71C1C", width=2, dash="solid"))
         if r_imediata < r_forte: fig.add_shape(type="line", x0=df.index[-30], y0=r_imediata, x1=df.index[-1], y1=r_imediata, line=dict(color="#EF5350", width=1, dash="dash"))
-        
-        # Suportes (Verde)
         if s_imediato > s_forte: fig.add_shape(type="line", x0=df.index[-30], y0=s_imediato, x1=df.index[-1], y1=s_imediato, line=dict(color="#66BB6A", width=1, dash="dash"))
         fig.add_shape(type="line", x0=df.index[-120], y0=s_forte, x1=df.index[-1], y1=s_forte, line=dict(color="#1B5E20", width=2, dash="solid"))
     
-    fig.update_layout(
-        title=f"{ticker} - Gráfico {tipo_grafico}", 
-        template="plotly_dark", 
-        height=500, 
-        xaxis_rangeslider_visible=False, 
-        margin=dict(l=50, r=50, t=50, b=50),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
+    fig.update_layout(title=f"{ticker} - {tipo_grafico}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=50, r=50, t=50, b=50), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
 # ================= INTERFACE =================
@@ -297,16 +272,31 @@ if st.session_state.analise_realizada:
     cols = ['Ativo', 'Preço', 'Score', 'Setup', 'Stop_Tecnico', 'Observacoes']
     
     if not df_res.empty:
-        df_alta = df_res[df_res['Direção'] == "ALTA"].sort_values('Score', ascending=False)
-        df_baixa = df_res[df_res['Direção'] == "BAIXA"].sort_values('Score', ascending=False)
+        # === AQUI ESTÁ A LÓGICA DE FILTRO CORRIGIDA ===
+        # Só entra nas listas principais se tiver Direção E Score >= 3
+        mask_alta = (df_res['Direção'] == "ALTA") & (df_res['Score'] >= 3)
+        mask_baixa = (df_res['Direção'] == "BAIXA") & (df_res['Score'] >= 3)
+        
+        # Todo o resto vai para Aguardando (Score 0, 1, 2 ou Neutro)
+        mask_aguardando = ~mask_alta & ~mask_baixa
+        
+        df_alta = df_res[mask_alta].sort_values('Score', ascending=False)
+        df_baixa = df_res[mask_baixa].sort_values('Score', ascending=False)
+        df_aguardando = df_res[mask_aguardando].sort_values('Score', ascending=False)
         
         c1, c2 = st.columns(2)
         with c1: 
-            st.success(f"🚀 ALTA: {len(df_alta)}")
+            st.success(f"🚀 ALTA (Score 3+): {len(df_alta)}")
             if not df_alta.empty: st.dataframe(df_alta[cols], use_container_width=True, hide_index=True)
         with c2: 
-            st.error(f"🩸 BAIXA: {len(df_baixa)}")
+            st.error(f"🩸 BAIXA (Score 3+): {len(df_baixa)}")
             if not df_baixa.empty: st.dataframe(df_baixa[cols], use_container_width=True, hide_index=True)
+        
+        # === TABELA DE AGUARDANDO RESTAURADA ===
+        with st.expander(f"⏳ Radar de Observação / Aguardando ({len(df_aguardando)})", expanded=True):
+            st.write("Ativos com tendência indefinida ou Score baixo (< 3).")
+            if not df_aguardando.empty:
+                st.dataframe(df_aguardando[['Ativo', 'Preço', 'Direção', 'Score', 'Observacoes']], use_container_width=True, hide_index=True)
         
         st.divider()
         st.subheader("🕵️‍♂️ Detalhamento & Gráficos")
@@ -316,7 +306,6 @@ if st.session_state.analise_realizada:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            # === ORDEM DAS ABAS MODIFICADA ===
             tab_score, tab_data, tab_chart = st.tabs(["📝 Scorecard & Métricas", "🔢 Dados Estruturais", "📊 Gráfico Interativo"])
             
             with tab_score:
@@ -355,10 +344,8 @@ if st.session_state.analise_realizada:
             with tab_chart:
                 col_sel, _ = st.columns([1, 3])
                 with col_sel:
-                    # Ordem ajustada: Diário primeiro
                     tf_selecionado = st.radio("Selecione o Tempo Gráfico:", ["Diário", "Semanal", "120 Minutos"], horizontal=True)
                 
-                # Renderização correta
                 if tf_selecionado == "Semanal":
                     fig = criar_grafico_dinamico(d_ativo['df_chart_w'], escolha, d, "Semanal")
                 elif tf_selecionado == "Diário":

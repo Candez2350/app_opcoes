@@ -30,21 +30,25 @@ IBXX_FULL_LIST.sort()
 def obter_dados(ticker):
     if not ticker.endswith(".SA"): ticker += ".SA"
     try:
-        # Baixa histórico
-        df = yf.download(ticker, period='6mo', interval='1d', progress=False, auto_adjust=False)
+        # === MUDANÇA FUNDAMENTAL ===
+        # Usamos a classe Ticker e o método .history
+        # Isso evita os erros de formatação do yf.download recente
+        acao = yf.Ticker(ticker)
+        df = acao.history(period='6mo', interval='1d', auto_adjust=False)
         
-        # Tratamento do MultiIndex (caso venha formatado diferente)
-        if isinstance(df.columns, pd.MultiIndex): 
-            df.columns = [c[0] for c in df.columns]
+        # O .history já retorna a tabela limpa, não precisa daquele loop de colunas
+        
+        # Apenas garantimos que temos as colunas certas (remove Dividends/Splits se vierem)
+        cols_necessarias = ['Open', 'High', 'Low', 'Close']
+        if not all(col in df.columns for col in cols_necessarias):
+            return None
             
-        # === CORREÇÃO DO BUG DOS ZEROS ===
-        # Remove linhas onde Open, High ou Low são iguais a 0 ou vazios
-        # Isso evita que o último candle "despenque" para 0 no gráfico
-        df = df[df['Open'] > 0]
-        df = df[df['High'] > 0]
-        df = df[df['Low'] > 0]
+        df = df[cols_necessarias]
 
-        # Garante que temos dados suficientes
+        # Filtro de segurança final (caso o Yahoo realmente mande dado corrompido)
+        # Mas com o .history isso raramente acontece
+        df = df[df['Close'] > 0]
+
         if len(df) > 50: return df
         return None
     except: return None

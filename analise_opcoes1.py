@@ -200,6 +200,17 @@ if st.sidebar.button("🔍 Rodar Análise"):
     barra.empty()
     
     # === LAYOUT 2 COLUNAS ===
+    total_ativos = len(lista_alta) + len(lista_baixa) + len(lista_neutra)
+    bullish_pct = int((len(lista_alta) / total_ativos) * 100) if total_ativos > 0 else 0
+    bearish_pct = int((len(lista_baixa) / total_ativos) * 100) if total_ativos > 0 else 0
+
+    st.divider()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("🐂 Ativos em Alta", len(lista_alta), f"{bullish_pct}% do radar")
+    m2.metric("🐻 Ativos em Baixa", len(lista_baixa), f"-{bearish_pct}% do radar", delta_color="inverse")
+    m3.metric("⚖️ Em Observação", len(lista_neutra))
+    st.divider()
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -229,3 +240,24 @@ if st.sidebar.button("🔍 Rodar Análise"):
             st.dataframe(df_n[cols_neutras], use_container_width=True, hide_index=True)
         else:
             st.write("Nenhum ativo na lista de observação.")
+
+    st.divider()
+    st.subheader("🔎 Zoom no Gráfico")
+    
+    # Junta as oportunidades encontradas para o selectbox
+    oportunidades = [item['Ativo'] for item in lista_alta + lista_baixa]
+    
+    if oportunidades:
+        escolha = st.selectbox("Selecione um ativo para ver o gráfico técnico:", oportunidades)
+        
+        # Recupera os dados novamente (ou usa session_state se quiser otimizar)
+        df_chart = obter_dados(escolha)
+        df_chart = calcular_indicadores(df_chart)
+        
+        # Cria um gráfico simples com as médias
+        st.line_chart(df_chart[['Close', 'EMA21', 'SMA50']])
+        
+        # Dica: Se quiser candles, precisaria da biblioteca 'plotly', 
+        # mas o line_chart nativo já resolve rápido.
+    else:
+        st.write("Rode a análise para ver gráficos detalhados.")

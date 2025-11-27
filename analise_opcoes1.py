@@ -1,5 +1,5 @@
 import streamlit as st
-import yfinance as yf
+from yahooquery import Ticker
 import pandas as pd
 import ta
 import plotly.graph_objects as go
@@ -30,25 +30,45 @@ IBXX_FULL_LIST.sort()
 def obter_dados(ticker):
     if not ticker.endswith(".SA"): ticker += ".SA"
     try:
-        # === MUDANÇA FUNDAMENTAL ===
-        # Usamos a classe Ticker e o método .history
-        # Isso evita os erros de formatação do yf.download recente
-        acao = yf.Ticker(ticker)
-        df = acao.history(period='6mo', interval='1d', auto_adjust=False)
+        t = Ticker(ticker)
         
-        # O .history já retorna a tabela limpa, não precisa daquele loop de colunas
+        # O yahooquery retorna os dados indexados por (símbolo, data)
+        df = t.history(period='6mo', interval='1d')
         
-        # Apenas garantimos que temos as colunas certas (remove Dividends/Splits se vierem)
-        cols_necessarias = ['Open', 'High', 'Low', 'Close']
-        if not all(col in df.columns for col in cols_necessarias):
-            return None
-            
-        df = df[cols_necessarias]
+        # Se o dataframe voltar vazio ou com erro
+        if df.empty: return None
 
-        # Filtro de segurança final (caso o Yahoo realmente mande dado corrompido)
-        # Mas com o .history isso raramente acontece
-        df = df[df['Close'] > 0]
+        # O índice vem como MultiIndex (ticker, date). Vamos resetar para facilitar.
+        df = df.reset_index()
+        
+        # Define a data como índice principal
+        df = df.set_index('date')
+        
+        # Renomeia as colunas de minúsculo (padrão yahooquery) para Maiúsculo (padrão do seu código)
+        df = df.rename(columns={
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close',
+            'volume': 'Volume'
+        })
+        
+        # === PROTEÇÃO CONTRA DADOS ZERADOS (CORREÇÃO DEFINITIVA) ===
+        # Se por acaso a API do Yahoo mandar zero no Open/High/Low (bug da fonte),
+        # nós forçamos esses valores a serem iguais ao Close para não quebrar o gráfico.
+        # Isso é melhor que apagar o dia.
+        
+        mask_zero = (df['Open'] <= 0) | (df['High'] <= 0) | (df['Low'] <= 0)
+        
+        if mask_zero.any():
+            # Se Open for 0, vira o Close
+            df.loc[mask_zero, 'Open'] = df.loc[mask_zero, 'Close']
+            # Se High for 0, vira o Close
+            df.loc[mask_zero, 'High'] = df.loc[mask_zero, 'Close']
+            # Se Low for 0, vira o Close
+            df.loc[mask_zero, 'Low'] = df.loc[mask_zero, 'Close']
 
+        # Garante que temos dados suficientes
         if len(df) > 50: return df
         return None
     except: return None

@@ -7,7 +7,12 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (Layout Polido)", page_icon="🦅", layout="wide")
+st.set_page_config(
+    page_title="Vector 3 | Algorithmic Scanner", 
+    page_icon="💠", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 if 'dados_analise' not in st.session_state:
     st.session_state.dados_analise = []
@@ -297,7 +302,12 @@ def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
     return fig
 
 # ================= INTERFACE =================
-st.title("🦅 Radar Opções Pro: Relatório de Análise IA")
+st.title("💠 VECTOR 3")
+st.markdown("### *Algoritmo de Fluxo & Estrutura de Mercado*")
+st.markdown("""
+> **Metodologia:** Triple Screen (Semanal/Diário/120m) • **Foco:** Price Action & Volatilidade • **Objetivo:** Swing Trade Direcional
+""")
+st.divider()
 
 selecao = IBXX_FULL_LIST
 if not st.sidebar.checkbox("Analisar Lista Completa", value=False):

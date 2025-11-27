@@ -42,15 +42,12 @@ def tratar_dataframe(df):
     if df.empty: return None
     df = df.reset_index()
     if 'date' in df.columns: df = df.set_index('date')
-    
     cols_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
     df = df.rename(columns=cols_map)
-    
     cols_price = ['Open', 'High', 'Low', 'Close']
     for c in cols_price:
         if c in df.columns: df[c] = df[c].replace(0, np.nan)
     df = df.dropna(subset=['Close'])
-    
     mask_nan = df[['Open', 'High', 'Low']].isna().any(axis=1)
     if mask_nan.any():
         df.loc[mask_nan, 'Open'] = df.loc[mask_nan, 'Close']
@@ -66,12 +63,10 @@ def obter_dados_multi_timeframe(ticker):
         df_d = tratar_dataframe(t.history(period='1y', interval='1d'))
         df_w = tratar_dataframe(t.history(period='2y', interval='1wk'))
         df_h = tratar_dataframe(t.history(period='60d', interval='60m'))
-        
         df_120 = None
         if df_h is not None and not df_h.empty:
             agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
             df_120 = df_h.resample('2h').agg(agg_dict).dropna()
-
         if df_d is None or len(df_d) < 50: return None
         return {"D": df_d, "W": df_w, "120": df_120}
     except: return None
@@ -86,7 +81,6 @@ def encontrar_pivos(df, window=5):
 def calcular_indicadores_tecnicos(df):
     if df is None or len(df) < 20: return None
     close = df['Close']
-    
     df['EMA21'] = ta.trend.EMAIndicator(close, window=21).ema_indicator()
     df['SMA50'] = ta.trend.SMAIndicator(close, window=50).sma_indicator()
     df['RSI'] = ta.momentum.RSIIndicator(close, window=14).rsi()
@@ -94,7 +88,6 @@ def calcular_indicadores_tecnicos(df):
     df['MACD_Signal'] = ta.trend.MACD(close).macd_signal()
     df['ADX'] = ta.trend.ADXIndicator(df['High'], df['Low'], close, window=14).adx()
     df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], close, window=14).average_true_range()
-    
     df['Log_Ret'] = np.log(close / close.shift(1))
     df['HV20'] = df['Log_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
     df['HV50'] = df['Log_Ret'].rolling(window=50).std() * np.sqrt(252) * 100
@@ -102,38 +95,31 @@ def calcular_indicadores_tecnicos(df):
 
 def analisar_timeframe_individual(df, periodo_nome):
     if df is None: return {"Viés": "N/A", "Score": 0, "Detalhe": "N/A"}
-    
     last = df.iloc[-1]
     preco_atual = last['Close']
     vies = "NEUTRO"
     score = 0
     motivos = []
     
-    # 1. TENDÊNCIA
     if (last['Close'] > last['EMA21']) and (last['EMA21'] > last['SMA50']):
         vies = "ALTA"; score += 2; motivos.append("Tendência Alta")
     elif (last['Close'] < last['EMA21']) and (last['EMA21'] < last['SMA50']):
         vies = "BAIXA"; score += 2; motivos.append("Tendência Baixa")
     else: motivos.append("Lateral")
 
-    # 2. MOMENTUM
     macd_ok = False
     if vies == "ALTA" and last['MACD'] > last['MACD_Signal']:
         score += 1; macd_ok = True; motivos.append("MACD Compra")
     elif vies == "BAIXA" and last['MACD'] < last['MACD_Signal']:
         score += 1; macd_ok = True; motivos.append("MACD Venda")
 
-    # 3. PRICE ACTION (SUPORTE & RESISTÊNCIA)
     pivots_low, pivots_high = encontrar_pivos(df, window=5)
-    
-    # Suportes
     recent_lows = pivots_low.tail(30).values 
     suportes_abaixo = [p for p in recent_lows if p < preco_atual]
     sup_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
     sup_forte = df['Low'].tail(120).min()
     if abs(sup_imediato - sup_forte) / sup_forte < 0.01: sup_imediato = sup_forte
 
-    # Resistências
     recent_highs = pivots_high.tail(30).values
     resistencias_acima = [p for p in recent_highs if p > preco_atual]
     res_imediata = min(resistencias_acima) if resistencias_acima else (preco_atual * 1.1)
@@ -175,7 +161,6 @@ def analisar_ativo_completo(ticker, dados_dict):
     obs_final = []
     breakdown = {"Tendência Diária": 0, "MACD Diário": 0, "Confluência Semanal": 0, "Confluência Intraday": 0, "Price Action": 0}
 
-    # Lógica de Pontuação Vector 3
     if analise_d['Viés'] == "ALTA":
         score_final += 2; breakdown["Tendência Diária"] = 2
         if analise_d['MACD_OK']: score_final += 1; breakdown["MACD Diário"] = 1
@@ -302,38 +287,74 @@ def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
     fig.update_layout(title=f"{ticker} - {tipo_grafico}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=50, r=50, t=50, b=50), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-# ================= INTERFACE PRINCIPAL =================
-st.title("💠 VECTOR 3")
-st.markdown("### *Algorithmic Market Scanner*")
+# ================= INTERFACE: SIDEBAR =================
+st.sidebar.markdown("## 💠 Vector 3")
+st.sidebar.markdown("---")
+st.sidebar.caption("Configuração de Análise")
 
-# --- SIDEBAR (LANDING PAGE INTERNA) ---
-st.sidebar.markdown("## 📘 Sobre o Vector 3")
-st.sidebar.info("""
-**O que é?**
-Um scanner quantitativo focado em Swing Trade de Opções. Elimina o ruído e foca na estrutura de preço.
+# Inputs limpos na Sidebar
+selecao = IBXX_FULL_LIST
+check_all = st.sidebar.checkbox("Analisar IBrX 100", value=False)
+if not check_all:
+    selecao = st.sidebar.multiselect("Carteira:", IBXX_FULL_LIST, default=["PETR4", "VALE3", "BOVA11", "MGLU3", "PRIO3", "BBAS3"])
 
-**Metodologia Triple Screen:**
-1.  **Semanal (Macro):** Define a maré. Não operamos contra ela.
-2.  **Diário (Gatilho):** Busca setups de Médias e Momentum.
-3.  **120 Min (Timing):** Refina a entrada intraday.
+st.sidebar.markdown("---")
+botao_analise = st.sidebar.button("🔍 SCANEAR MERCADO", type="primary")
 
-**Parâmetros:**
-* **Trend Following:** EMA21 > SMA50.
-* **Price Action:** Pivôs e Suportes/Resistências automáticos.
-* **Gestão:** Stop Técnico (1.5x ATR) e Payoff.
+st.sidebar.markdown("### Metodologia")
+st.sidebar.markdown("""
+**1. Triple Screen:**
+* **Macro (W):** Filtro de Tendência.
+* **Gatilho (D):** Médias + MACD.
+* **Timing (120m):** Sintonia fina.
+
+**2. Price Action:**
+* Suportes e Resistências calculados dinamicamente via Pivôs.
 """)
 
-selecao = IBXX_FULL_LIST
-if not st.sidebar.checkbox("Analisar IBrX 100 Completo", value=False):
-    selecao = st.sidebar.multiselect("Carteira Personalizada:", IBXX_FULL_LIST, default=["PETR4", "VALE3", "BOVA11", "MGLU3", "PRIO3", "BBAS3"])
+# ================= INTERFACE: ÁREA PRINCIPAL =================
 
-if st.sidebar.button("🔍 Iniciar Varredura Vector 3"):
+# --- TELA DE BOAS-VINDAS (LANDING PAGE) ---
+if not st.session_state.analise_realizada and not botao_analise:
+    # Cabeçalho Impactante
+    st.title("💠 VECTOR 3")
+    st.markdown("### *Algorithmic Market Scanner*")
+    st.markdown("---")
+    
+    # Hero Section
+    st.markdown("""
+    ### 🎯 Pare de Adivinhar. Comece a Calcular.
+    O **Vector 3** elimina o ruído do mercado e foca na estrutura de preço. 
+    Nossa engine processa múltiplos tempos gráficos (Semanal, Diário e 120min) para encontrar a confluência perfeita para Swing Trade de Opções.
+    """)
+    st.markdown("---")
+
+    # Colunas de Features
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.subheader("🌊 A Maré (Trend)")
+        st.info("**Filtro Macro:** Só operamos a favor da tendência principal. Se o Semanal diz 'não', o Diário obedece.")
+    
+    with col2:
+        st.subheader("🌊 A Onda (Setup)")
+        st.warning("**Gatilho Técnico:** Cruzamento de médias, Momentum (MACD) e quebra de estrutura (Price Action).")
+        
+    with col3:
+        st.subheader("🎯 O Timing (Entry)")
+        st.success("**Sintonia Fina:** O gráfico de 120min confirma se o momento exato da entrada é agora.")
+
+    st.divider()
+    st.caption("👈 Selecione seus ativos na barra lateral e clique em 'SCANEAR MERCADO' para iniciar.")
+
+# --- LÓGICA DE PROCESSAMENTO ---
+if botao_analise:
     resultados = []
     progresso = st.progress(0)
     status = st.empty()
     
     for i, ticker in enumerate(selecao):
-        status.text(f"Processando {ticker}...")
+        status.text(f"Lendo {ticker}...")
         dados = obter_dados_multi_timeframe(ticker)
         if dados:
             res = analisar_ativo_completo(ticker, dados)
@@ -343,9 +364,12 @@ if st.sidebar.button("🔍 Iniciar Varredura Vector 3"):
     status.empty(); progresso.empty()
     st.session_state.dados_analise = resultados
     st.session_state.analise_realizada = True
+    # Força o rerun para sair da tela de boas-vindas e ir para resultados
+    st.rerun() 
 
-# ================= EXIBIÇÃO RESULTADOS =================
+# --- EXIBIÇÃO DE RESULTADOS ---
 if st.session_state.analise_realizada:
+    st.title("💠 VECTOR 3 | Resultados")
     df_res = pd.DataFrame(st.session_state.dados_analise)
     cols = ['Ativo', 'Preço', 'Score', 'Setup', 'Stop_Tecnico', 'Observacoes']
     
@@ -360,26 +384,26 @@ if st.session_state.analise_realizada:
         
         c1, c2 = st.columns(2)
         with c1: 
-            st.success(f"🚀 ALTA (Score 3+): {len(df_alta)}")
+            st.success(f"🚀 Oportunidades de ALTA (Score 3+): {len(df_alta)}")
             if not df_alta.empty: st.dataframe(df_alta[cols], use_container_width=True, hide_index=True)
         with c2: 
-            st.error(f"🩸 BAIXA (Score 3+): {len(df_baixa)}")
+            st.error(f"🩸 Oportunidades de BAIXA (Score 3+): {len(df_baixa)}")
             if not df_baixa.empty: st.dataframe(df_baixa[cols], use_container_width=True, hide_index=True)
         
-        with st.expander(f"⏳ Radar de Observação / Aguardando ({len(df_aguardando)})", expanded=True):
-            st.write("Ativos com tendência indefinida ou Score insuficiente (< 3).")
+        with st.expander(f"⏳ Em Observação / Neutros ({len(df_aguardando)})", expanded=False):
+            st.write("Ativos aguardando alinhamento de tendência ou rompimento.")
             if not df_aguardando.empty:
                 st.dataframe(df_aguardando[['Ativo', 'Preço', 'Direção', 'Score', 'Observacoes']], use_container_width=True, hide_index=True)
         
         st.divider()
-        st.subheader("🕵️‍♂️ Detalhamento & Gráficos")
-        escolha = st.selectbox("Selecione Ativo para Raio-X:", df_res['Ativo'].tolist())
+        st.subheader("🕵️‍♂️ Raio-X Técnico")
+        escolha = st.selectbox("Selecione um ativo para análise detalhada:", df_res['Ativo'].tolist())
         
         if escolha:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            tab_relatorio, tab_score, tab_data, tab_chart = st.tabs(["📋 Relatório de Análise", "📝 Scorecard & Métricas", "🔢 Dados Estruturais", "📊 Gráfico Interativo"])
+            tab_relatorio, tab_score, tab_data, tab_chart = st.tabs(["📋 Relatório IA", "📝 Scorecard", "🔢 Dados Estruturais", "📊 Gráfico"])
             
             with tab_relatorio:
                 relatorio = gerar_relatorio_textual(d_ativo)
@@ -387,14 +411,14 @@ if st.session_state.analise_realizada:
                 st.info(f"**Plano Sugerido:** Entrada próxima a R\$ {d_ativo['Preço']:.2f}, buscando Alvo em R\$ {d_ativo['Alvo']:.2f} com proteção em R\$ {d_ativo['Stop_Tecnico']:.2f}.")
 
             with tab_score:
-                st.markdown("#### 🎯 Métricas Operacionais")
+                st.markdown("#### 🎯 Métricas de Risco")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Preço", f"R$ {d_ativo['Preço']:.2f}")
                 m2.metric("Stop (1.5x ATR)", f"R$ {d_ativo['Stop_Tecnico']:.2f}")
                 m3.metric("Alvo (3x ATR)", f"R$ {d_ativo['Alvo']:.2f}")
-                m4.metric("Risco/Retorno", f"1 : {d_ativo['Payoff']:.1f}", delta="Bom" if d_ativo['Payoff'] >= 2.0 else "Atenção")
+                m4.metric("Payoff (Risco/Retorno)", f"1 : {d_ativo['Payoff']:.1f}", delta="Aprovado" if d_ativo['Payoff'] >= 2.0 else "Atenção")
                 st.divider()
-                st.markdown("#### 📝 Score Breakdown")
+                st.markdown("#### 📝 Composição do Score")
                 bk = d_ativo['Breakdown']
                 s1, s2, s3, s4, s5 = st.columns(5)
                 def fs(v): return f"✅ +{v}" if v>0 else "❌ 0"
@@ -415,7 +439,7 @@ if st.session_state.analise_realizada:
             with tab_chart:
                 col_sel, _ = st.columns([1, 3])
                 with col_sel:
-                    tf_selecionado = st.radio("Selecione o Tempo Gráfico:", ["Diário", "Semanal", "120 Minutos"], horizontal=True)
+                    tf_selecionado = st.radio("Tempo Gráfico:", ["Diário", "Semanal", "120 Minutos"], horizontal=True)
                 if tf_selecionado == "Semanal": fig = criar_grafico_dinamico(d_ativo['df_chart_w'], escolha, d, "Semanal")
                 elif tf_selecionado == "Diário": fig = criar_grafico_dinamico(d_ativo['df_chart_d'], escolha, d, "Diário")
                 else: fig = criar_grafico_dinamico(d_ativo['df_chart_120'], escolha, d, "120 Minutos")

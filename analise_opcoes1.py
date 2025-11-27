@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (Filtro Score 3+)", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Radar Opções Master (Relatório IA)", page_icon="🦅", layout="wide")
 
 if 'dados_analise' not in st.session_state:
     st.session_state.dados_analise = []
@@ -219,15 +219,67 @@ def analisar_ativo_completo(ticker, dados_dict):
         "df_chart_d": df_d, "df_chart_w": df_w, "df_chart_120": df_120
     }
 
+def gerar_relatorio_textual(data):
+    """Gera um texto explicativo estilo relatório de analista."""
+    ticker = data['Ativo']
+    direcao = data['Direção']
+    score = data['Score']
+    bk = data['Breakdown']
+    w, d = data['analise_w'], data['analise_d']
+    
+    # 1. Título
+    emoji = "🐂" if direcao == "ALTA" else ("🐻" if direcao == "BAIXA" else "⚖️")
+    texto = f"### {emoji} Relatório Técnico: {ticker}\n\n"
+    
+    # 2. Diagnóstico Geral
+    texto += "**1. Diagnóstico Geral:**\n"
+    if direcao == "NEUTRO":
+        texto += f"O ativo encontra-se em zona de indefinição. O Score atual é de **{score}/6**, insuficiente para disparar um setup seguro. "
+        if d['Viés'] != w['Viés']:
+            texto += f"Há uma divergência clara: O Diário aponta para **{d['Viés']}**, mas o Semanal (Macro) aponta para **{w['Viés']}**. Essa falta de alinhamento aumenta o risco de falsos rompimentos.\n\n"
+        else:
+            texto += "O ativo está lateral ou as médias ainda não se alinharam claramente.\n\n"
+    else:
+        forca = "Forte" if score >= 5 else "Moderada"
+        texto += f"O ativo apresenta uma tendência de **{direcao}** com força **{forca}** (Score {score}/6). A estrutura de médias móveis no gráfico diário apoia esse movimento.\n\n"
+
+    # 3. Pontos de Confirmação (Checklist)
+    texto += "**2. O que sustenta a tese (Pontos Positivos):**\n"
+    if bk['Tendência Diária'] > 0: texto += "- ✅ **Tendência Diária:** Médias alinhadas a favor do movimento.\n"
+    if bk['MACD Diário'] > 0: texto += "- ✅ **Momentum:** O MACD cruzou confirmando a força do movimento.\n"
+    if bk['Confluência Semanal'] > 0: texto += "- ✅ **Visão Macro:** O gráfico Semanal confirma a tendência, aumentando a segurança.\n"
+    if bk['Confluência Intraday'] > 0: texto += "- ✅ **Timing:** O intraday (120min) já está alinhado, sugerindo entrada imediata.\n"
+    if bk['Price Action'] > 0: texto += f"- ✅ **Price Action:** Houve um rompimento de {data['Direção'].lower()} importante recentemente.\n"
+    
+    # 4. Pontos de Atenção (Riscos)
+    riscos = []
+    if bk['Confluência Semanal'] == 0 and direcao != "NEUTRO": riscos.append("O gráfico Semanal ainda não confirmou totalmente (pode ser apenas um repique).")
+    if bk['Price Action'] == 0 and direcao != "NEUTRO": riscos.append("O preço ainda está dentro de uma congestão (não rompeu níveis chave).")
+    if bk['MACD Diário'] == 0 and direcao != "NEUTRO": riscos.append("O MACD está atrasado ou divergente.")
+    
+    if riscos:
+        texto += "\n**3. Pontos de Atenção (Riscos):**\n"
+        for r in riscos: texto += f"- ⚠️ {r}\n"
+    
+    # 5. Análise de Preço
+    texto += "\n**4. Níveis Chave (Price Action):**\n"
+    if direcao == "ALTA":
+        texto += f"O suporte imediato para posicionamento de stop está na região de **R$ {d['Sup_Imediato']:.2f}**. "
+        texto += f"O caminho está livre até a próxima resistência relevante em **R$ {d['Res_Imediata']:.2f}**."
+    elif direcao == "BAIXA":
+        texto += f"A resistência imediata para proteção está em **R$ {d['Res_Imediata']:.2f}**. "
+        texto += f"O preço tem espaço para buscar o suporte em **R$ {d['Sup_Imediato']:.2f}**."
+    else:
+        texto += f"O ativo está imprensado entre o suporte de **R$ {d['Sup_Imediato']:.2f}** e a resistência de **R$ {d['Res_Imediata']:.2f}**."
+
+    return texto
+
 def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
     if df is None or df.empty:
-        fig = go.Figure()
-        fig.update_layout(title=f"Dados insuficientes para {tipo_grafico}")
-        return fig
+        fig = go.Figure(); fig.update_layout(title=f"Dados insuficientes para {tipo_grafico}"); return fig
 
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name=f'{ticker}'))
-
     if 'EMA21' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['EMA21'], mode='lines', name='EMA21', line=dict(color='cyan', width=1)))
     if 'SMA50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], mode='lines', name='SMA50', line=dict(color='yellow', width=1)))
         
@@ -244,7 +296,7 @@ def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
     return fig
 
 # ================= INTERFACE =================
-st.title("🦅 Radar Opções Pro: Interface Avançada")
+st.title("🦅 Radar Opções Pro: Relatório de Análise IA")
 
 selecao = IBXX_FULL_LIST
 if not st.sidebar.checkbox("Analisar Lista Completa", value=False):
@@ -272,12 +324,8 @@ if st.session_state.analise_realizada:
     cols = ['Ativo', 'Preço', 'Score', 'Setup', 'Stop_Tecnico', 'Observacoes']
     
     if not df_res.empty:
-        # === AQUI ESTÁ A LÓGICA DE FILTRO CORRIGIDA ===
-        # Só entra nas listas principais se tiver Direção E Score >= 3
         mask_alta = (df_res['Direção'] == "ALTA") & (df_res['Score'] >= 3)
         mask_baixa = (df_res['Direção'] == "BAIXA") & (df_res['Score'] >= 3)
-        
-        # Todo o resto vai para Aguardando (Score 0, 1, 2 ou Neutro)
         mask_aguardando = ~mask_alta & ~mask_baixa
         
         df_alta = df_res[mask_alta].sort_values('Score', ascending=False)
@@ -292,7 +340,6 @@ if st.session_state.analise_realizada:
             st.error(f"🩸 BAIXA (Score 3+): {len(df_baixa)}")
             if not df_baixa.empty: st.dataframe(df_baixa[cols], use_container_width=True, hide_index=True)
         
-        # === TABELA DE AGUARDANDO RESTAURADA ===
         with st.expander(f"⏳ Radar de Observação / Aguardando ({len(df_aguardando)})", expanded=True):
             st.write("Ativos com tendência indefinida ou Score baixo (< 3).")
             if not df_aguardando.empty:
@@ -306,8 +353,14 @@ if st.session_state.analise_realizada:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            tab_score, tab_data, tab_chart = st.tabs(["📝 Scorecard & Métricas", "🔢 Dados Estruturais", "📊 Gráfico Interativo"])
+            # ABAS ATUALIZADAS
+            tab_relatorio, tab_score, tab_data, tab_chart = st.tabs(["📋 Relatório de Análise", "📝 Scorecard & Métricas", "🔢 Dados Estruturais", "📊 Gráfico Interativo"])
             
+            with tab_relatorio:
+                relatorio = gerar_relatorio_textual(d_ativo)
+                st.markdown(relatorio)
+                st.info(f"**Plano Sugerido:** Entrada próxima a R$ {d_ativo['Preço']:.2f}, buscando Alvo em R$ {d_ativo['Alvo']:.2f} com proteção em R$ {d_ativo['Stop_Tecnico']:.2f}.")
+
             with tab_score:
                 st.markdown("#### 🎯 Métricas Operacionais")
                 m1, m2, m3, m4 = st.columns(4)
@@ -315,7 +368,6 @@ if st.session_state.analise_realizada:
                 m2.metric("Stop (1.5x ATR)", f"R$ {d_ativo['Stop_Tecnico']:.2f}")
                 m3.metric("Alvo (3x ATR)", f"R$ {d_ativo['Alvo']:.2f}")
                 m4.metric("Risco/Retorno", f"1 : {d_ativo['Payoff']:.1f}", delta="Bom" if d_ativo['Payoff'] >= 2.0 else "Atenção")
-                
                 st.divider()
                 st.markdown("#### 📝 Score Breakdown")
                 bk = d_ativo['Breakdown']
@@ -327,30 +379,19 @@ if st.session_state.analise_realizada:
             with tab_data:
                 col_w, col_d, col_h = st.columns(3)
                 with col_w:
-                    st.info("📅 SEMANAL")
-                    st.write(f"Viés: **{w['Viés']}**")
-                    st.caption(f"Motivo: {w['Motivos']}")
+                    st.info("📅 SEMANAL"); st.write(f"Viés: **{w['Viés']}**"); st.caption(f"Motivo: {w['Motivos']}")
                 with col_d:
-                    st.warning("📆 DIÁRIO")
-                    st.write(f"Viés: **{d['Viés']}**")
-                    st.markdown("**Resistências:**")
-                    st.code(f"Imed: {d['Res_Imediata']:.2f}\nForte:{d['Res_Forte']:.2f}")
-                    st.markdown("**Suportes:**")
-                    st.code(f"Imed: {d['Sup_Imediato']:.2f}\nForte:{d['Sup_Forte']:.2f}")
+                    st.warning("📆 DIÁRIO"); st.write(f"Viés: **{d['Viés']}**")
+                    st.markdown("**Resistências:**"); st.code(f"Imed: {d['Res_Imediata']:.2f}\nForte:{d['Res_Forte']:.2f}")
+                    st.markdown("**Suportes:**"); st.code(f"Imed: {d['Sup_Imediato']:.2f}\nForte:{d['Sup_Forte']:.2f}")
                 with col_h:
-                    st.success("⏱️ 120 MIN")
-                    st.write(f"Viés: **{h['Viés']}**")
+                    st.success("⏱️ 120 MIN"); st.write(f"Viés: **{h['Viés']}**")
 
             with tab_chart:
                 col_sel, _ = st.columns([1, 3])
                 with col_sel:
                     tf_selecionado = st.radio("Selecione o Tempo Gráfico:", ["Diário", "Semanal", "120 Minutos"], horizontal=True)
-                
-                if tf_selecionado == "Semanal":
-                    fig = criar_grafico_dinamico(d_ativo['df_chart_w'], escolha, d, "Semanal")
-                elif tf_selecionado == "Diário":
-                    fig = criar_grafico_dinamico(d_ativo['df_chart_d'], escolha, d, "Diário")
-                else:
-                    fig = criar_grafico_dinamico(d_ativo['df_chart_120'], escolha, d, "120 Minutos")
-                
+                if tf_selecionado == "Semanal": fig = criar_grafico_dinamico(d_ativo['df_chart_w'], escolha, d, "Semanal")
+                elif tf_selecionado == "Diário": fig = criar_grafico_dinamico(d_ativo['df_chart_d'], escolha, d, "Diário")
+                else: fig = criar_grafico_dinamico(d_ativo['df_chart_120'], escolha, d, "120 Minutos")
                 st.plotly_chart(fig, use_container_width=True)

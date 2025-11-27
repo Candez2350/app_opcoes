@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (Suportes Mistos)", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Radar Opções Master (Layout Completo)", page_icon="🦅", layout="wide")
 
 # Inicialização do Session State
 if 'dados_analise' not in st.session_state:
@@ -101,7 +101,7 @@ def calcular_indicadores_tecnicos(df):
     return df
 
 def analisar_timeframe_individual(df, periodo_nome):
-    if df is None: return {"Viés": "N/A", "Score": 0}
+    if df is None: return {"Viés": "N/A", "Score": 0, "Detalhe": "N/A"}
     
     last = df.iloc[-1]
     preco_atual = last['Close']
@@ -134,29 +134,24 @@ def analisar_timeframe_individual(df, periodo_nome):
     pivots_low, pivots_high = encontrar_pivos(df, window=5)
     
     # -- SUPORTES --
-    # Suporte Imediato (Pivô mais próximo abaixo)
+    # Suporte Imediato
     recent_lows = pivots_low.tail(30).values 
     suportes_abaixo = [p for p in recent_lows if p < preco_atual]
     sup_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
     
-    # Suporte Forte (Mínima absoluta dos últimos 6 meses/120 candles)
+    # Suporte Forte (120 candles)
     sup_forte = df['Low'].tail(120).min()
-    
-    # Se o suporte imediato for o mesmo que o forte (ou muito perto), consideramos um só
-    if abs(sup_imediato - sup_forte) / sup_forte < 0.01:
-        sup_imediato = sup_forte
+    if abs(sup_imediato - sup_forte) / sup_forte < 0.01: sup_imediato = sup_forte
 
     # -- RESISTÊNCIAS --
-    # Resistência Imediata (Pivô mais próximo acima)
+    # Resistência Imediata
     recent_highs = pivots_high.tail(30).values
     resistencias_acima = [p for p in recent_highs if p > preco_atual]
     res_imediata = min(resistencias_acima) if resistencias_acima else (preco_atual * 1.1)
     
-    # Resistência Forte (Máxima absoluta dos últimos 6 meses)
+    # Resistência Forte
     res_forte = df['High'].tail(120).max()
-    
-    if abs(res_imediata - res_forte) / res_forte < 0.01:
-        res_imediata = res_forte
+    if abs(res_imediata - res_forte) / res_forte < 0.01: res_imediata = res_forte
 
     # Análise de Rompimento
     pa_status = "Dentro do Canal"
@@ -227,7 +222,7 @@ def analisar_ativo_completo(ticker, dados_dict):
     # Alvos/Stop
     atr = last_d['ATR']
     if decisao_final == "ALTA":
-        stop = analise_d['Sup_Imediato'] # Stop no suporte local
+        stop = analise_d['Sup_Imediato']
         alvo = last_d['Close'] + (3*atr)
     elif decisao_final == "BAIXA":
         stop = analise_d['Res_Imediata']
@@ -267,37 +262,33 @@ def criar_grafico_mtf(df, ticker, analise_d):
     r_imediata = analise_d.get('Res_Imediata', 0)
     r_forte = analise_d.get('Res_Forte', 0)
     
-    # 1. Resistência Forte (Vermelho Escuro, Contínuo)
+    # Resistências
     fig.add_shape(type="line", x0=df.index[-120], y0=r_forte, x1=df.index[-1], y1=r_forte, 
                   line=dict(color="#B71C1C", width=2, dash="solid"))
-    fig.add_annotation(x=df.index[-1], y=r_forte, text=f"Topo Forte: {r_forte:.2f}", showarrow=False, yshift=10, font=dict(color="#B71C1C"))
-
-    # 2. Resistência Imediata (Vermelho Claro, Pontilhado)
-    if r_imediata < r_forte: # Só mostra se for diferente
+    
+    if r_imediata < r_forte:
         fig.add_shape(type="line", x0=df.index[-30], y0=r_imediata, x1=df.index[-1], y1=r_imediata, 
                       line=dict(color="#EF5350", width=1, dash="dash"))
-        fig.add_annotation(x=df.index[-5], y=r_imediata, text=f"Res. Local: {r_imediata:.2f}", showarrow=False, yshift=10, font=dict(color="#EF5350"))
+        fig.add_annotation(x=df.index[-5], y=r_imediata, text=f"R.Local", showarrow=False, yshift=10, font=dict(color="#EF5350"))
 
-    # 3. Suporte Imediato (Verde Claro, Pontilhado) - Ex: Os 32,00 da PETR4
+    # Suportes
     if s_imediato > s_forte:
         fig.add_shape(type="line", x0=df.index[-30], y0=s_imediato, x1=df.index[-1], y1=s_imediato, 
                       line=dict(color="#66BB6A", width=1, dash="dash"))
-        fig.add_annotation(x=df.index[-5], y=s_imediato, text=f"Sup. Local: {s_imediato:.2f}", showarrow=False, yshift=-10, font=dict(color="#66BB6A"))
+        fig.add_annotation(x=df.index[-5], y=s_imediato, text=f"S.Local", showarrow=False, yshift=-10, font=dict(color="#66BB6A"))
 
-    # 4. Suporte Forte (Verde Escuro, Contínuo) - Ex: Os 29,55 da PETR4
     fig.add_shape(type="line", x0=df.index[-120], y0=s_forte, x1=df.index[-1], y1=s_forte, 
                   line=dict(color="#1B5E20", width=2, dash="solid"))
-    fig.add_annotation(x=df.index[-1], y=s_forte, text=f"Fundo Forte: {s_forte:.2f}", showarrow=False, yshift=-10, font=dict(color="#1B5E20"))
     
     fig.update_layout(title=f"Análise Técnica Daily: {ticker}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=50, r=50, t=50, b=50))
     return fig
 
 # ================= INTERFACE =================
-st.title("🦅 Radar Opções Pro: Dual Support System")
+st.title("🦅 Radar Opções Pro: Dual Support & Triple Screen")
 st.markdown("""
-**Análise de Price Action Avançada:**
-* **Linha Contínua (Escura):** Suportes e Resistências **Fortes** (Estruturais).
-* **Linha Pontilhada (Clara):** Suportes e Resistências **Imediatos** (Pivôs).
+**Sistema Integrado de Swing Trade em Opções:**
+1.  **Triple Screen:** Valida tendência no Semanal, Diário e Intraday.
+2.  **Dual Support:** Diferencia Suportes Locais (Pontilhados) de Estruturais (Sólidos).
 """)
 
 # Sidebar
@@ -339,18 +330,48 @@ if st.session_state.analise_realizada:
             if not df_baixa.empty: st.dataframe(df_baixa[['Ativo', 'Preço', 'Score', 'Setup', 'Stop']], use_container_width=True, hide_index=True)
         
         st.divider()
-        st.subheader("🕵️‍♂️ Detalhamento Técnico")
+        st.subheader("🕵️‍♂️ Detalhamento Técnico (Triple Screen)")
         ativos = df_res['Ativo'].tolist()
         escolha = st.selectbox("Selecione Ativo:", ativos)
         
         if escolha:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
-            analise_d = d_ativo['analise_d']
+            w = d_ativo['analise_w']
+            d = d_ativo['analise_d']
+            h = d_ativo['analise_120']
             
+            # --- ÁREA DE METRICAS ---
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Preço", f"R$ {d_ativo['Preço']:.2f}")
-            c2.metric("Sup. Imediato", f"R$ {analise_d['Sup_Imediato']:.2f}")
-            c3.metric("Sup. Forte (Fundo)", f"R$ {analise_d['Sup_Forte']:.2f}", delta_color="normal")
-            c4.metric("Alvo", f"R$ {d_ativo['Alvo']:.2f}")
+            c2.metric("Sup. Imediato (Stop)", f"R$ {d['Sup_Imediato']:.2f}", delta_color="off")
+            c3.metric("Sup. Forte (Fundo)", f"R$ {d['Sup_Forte']:.2f}", delta_color="normal")
+            c4.metric("Alvo (Gain)", f"R$ {d_ativo['Alvo']:.2f}")
             
-            st.plotly_chart(criar_grafico_mtf(d_ativo['df_chart'], escolha, analise_d), use_container_width=True)
+            st.markdown("---")
+            
+            # --- ÁREA COMPARATIVA DETALHADA (RESTAURADA) ---
+            col_w, col_d, col_h = st.columns(3)
+            
+            with col_w:
+                st.info("📅 SEMANAL (A Maré)")
+                st.write(f"**Viés:** {w['Viés']}")
+                st.write(f"**RSI:** {w['RSI']:.1f}")
+                st.caption(f"Status: {w['PA_Status']}")
+                st.markdown(f"*Motivo: {w['Motivos']}*")
+
+            with col_d:
+                st.warning("📆 DIÁRIO (A Onda - Gatilho)")
+                st.write(f"**Viés:** {d['Viés']}")
+                st.write(f"**RSI:** {d['RSI']:.1f}")
+                st.markdown(f"**Res. Local:** `{d['Res_Imediata']:.2f}`")
+                st.markdown(f"**Sup. Local:** `{d['Sup_Imediato']:.2f}`")
+                st.caption(f"Status: {d['PA_Status']}")
+
+            with col_h:
+                st.success("⏱️ 120 MIN (Entrada Fina)")
+                st.write(f"**Viés:** {h['Viés']}")
+                st.write(f"**RSI:** {h['RSI']:.1f}")
+                st.caption(f"Status: {h['PA_Status']}")
+
+            # Gráfico
+            st.plotly_chart(criar_grafico_mtf(d_ativo['df_chart'], escolha, d), use_container_width=True)

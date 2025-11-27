@@ -32,7 +32,19 @@ def obter_dados(ticker):
     try:
         # Baixa histórico
         df = yf.download(ticker, period='6mo', interval='1d', progress=False, auto_adjust=False)
-        if isinstance(df.columns, pd.MultiIndex): df.columns = [c[0] for c in df.columns]
+        
+        # Tratamento do MultiIndex (caso venha formatado diferente)
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = [c[0] for c in df.columns]
+            
+        # === CORREÇÃO DO BUG DOS ZEROS ===
+        # Remove linhas onde Open, High ou Low são iguais a 0 ou vazios
+        # Isso evita que o último candle "despenque" para 0 no gráfico
+        df = df[df['Open'] > 0]
+        df = df[df['High'] > 0]
+        df = df[df['Low'] > 0]
+
+        # Garante que temos dados suficientes
         if len(df) > 50: return df
         return None
     except: return None

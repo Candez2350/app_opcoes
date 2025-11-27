@@ -157,7 +157,7 @@ def analisar_ativo(ticker, df):
 # ================= INTERFACE =================
 st.title("⚡ Radar Opções: Preço & Volatilidade")
 st.markdown("""
-**Rastreamento Automático de Oportunidades (Trend + Volatility)**
+**Rastreamento Automático de Oportunidades (Tendência + Volatilidade)**
 * **🎯 Direção:** Identifica tendências de Alta (Call) ou Baixa (Put) via Setup Gráfico.
 * **📊 Volatilidade:** Analisa se o prêmio está caro ou barato comparando a HV20 vs HV50.
 * **🛠️ Setup:** Sugere automaticamente se o ideal é operar **A Seco** (Explosão) ou com **Travas** (Proteção).

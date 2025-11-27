@@ -4,9 +4,10 @@ import pandas as pd
 import ta
 import plotly.graph_objects as go
 import numpy as np
+from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (Layout Pro)", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Radar Opções Master (MTF & Price Action)", page_icon="🦅", layout="wide")
 
 # ================= LISTA IBrX 100 =================
 IBXX_FULL_LIST = [
@@ -24,318 +25,419 @@ IBXX_FULL_LIST = [
 ]
 IBXX_FULL_LIST.sort()
 
-# ================= CÁLCULOS (CNPI) =================
+# ================= CÁLCULOS E DADOS =================
 
-@st.cache_data(ttl=600)
-def obter_dados(ticker):
+def tratar_dataframe(df):
+    """Limpa e padroniza o DataFrame vindo do yahooquery."""
+    if df.empty: return None
+    df = df.reset_index()
+    if 'date' in df.columns:
+        df = df.set_index('date')
+    
+    # Padronização de nomes
+    cols_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
+    df = df.rename(columns=cols_map)
+    
+    # Tratamento de zeros (Bug Yahoo)
+    cols_price = ['Open', 'High', 'Low', 'Close']
+    for c in cols_price:
+        if c in df.columns:
+            df[c] = df[c].replace(0, np.nan)
+    df = df.dropna(subset=['Close']) # Remove dias sem close
+    
+    # Preenchimento de High/Low/Open corrompidos
+    mask_nan = df[['Open', 'High', 'Low']].isna().any(axis=1)
+    if mask_nan.any():
+        df.loc[mask_nan, 'Open'] = df.loc[mask_nan, 'Close']
+        df.loc[mask_nan, 'High'] = df.loc[mask_nan, 'Close']
+        df.loc[mask_nan, 'Low'] = df.loc[mask_nan, 'Close']
+
+    return df
+
+@st.cache_data(ttl=1800) # Cache de 30 min
+def obter_dados_multi_timeframe(ticker):
     if not ticker.endswith(".SA"): ticker += ".SA"
+    
     try:
         t = Ticker(ticker)
         
-        # O yahooquery retorna os dados indexados por (símbolo, data)
-        df = t.history(period='6mo', interval='1d')
+        # 1. Dados Diários (Principal) - Pega 1 ano para médias longas
+        df_d = t.history(period='1y', interval='1d')
+        df_d = tratar_dataframe(df_d)
         
-        # Se o dataframe voltar vazio ou com erro
-        if df.empty: return None
+        # 2. Dados Semanais (Tendência Macro)
+        df_w = t.history(period='2y', interval='1wk')
+        df_w = tratar_dataframe(df_w)
 
-        # O índice vem como MultiIndex (ticker, date). Vamos resetar para facilitar.
-        df = df.reset_index()
+        # 3. Dados Intraday (Para gerar 120min) - Yahoo limita intraday a 60dias aprox
+        df_h = t.history(period='60d', interval='60m')
+        df_h = tratar_dataframe(df_h)
         
-        # Define a data como índice principal
-        df = df.set_index('date')
-        
-        # Renomeia as colunas de minúsculo (padrão yahooquery) para Maiúsculo (padrão do seu código)
-        df = df.rename(columns={
-            'open': 'Open',
-            'high': 'High',
-            'low': 'Low',
-            'close': 'Close',
-            'volume': 'Volume'
-        })
-        
-        # === PROTEÇÃO CONTRA DADOS ZERADOS (CORREÇÃO DEFINITIVA) ===
-        # Se por acaso a API do Yahoo mandar zero no Open/High/Low (bug da fonte),
-        # nós forçamos esses valores a serem iguais ao Close para não quebrar o gráfico.
-        # Isso é melhor que apagar o dia.
-        
-        mask_zero = (df['Open'] <= 0) | (df['High'] <= 0) | (df['Low'] <= 0)
-        
-        if mask_zero.any():
-            # Se Open for 0, vira o Close
-            df.loc[mask_zero, 'Open'] = df.loc[mask_zero, 'Close']
-            # Se High for 0, vira o Close
-            df.loc[mask_zero, 'High'] = df.loc[mask_zero, 'Close']
-            # Se Low for 0, vira o Close
-            df.loc[mask_zero, 'Low'] = df.loc[mask_zero, 'Close']
+        # Resample de 60m para 120m (2H)
+        df_120 = None
+        if df_h is not None and not df_h.empty:
+            # Regra de agregação para velas
+            agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+            # Resample para 2h, fechado à direita
+            df_120 = df_h.resample('2h').agg(agg_dict).dropna()
 
-        # Garante que temos dados suficientes
-        if len(df) > 50: return df
+        # Validação mínima
+        if df_d is None or len(df_d) < 50: return None
+        
+        return {"D": df_d, "W": df_w, "120": df_120}
+        
+    except Exception as e:
+        # st.error(f"Erro em {ticker}: {e}") # Debug
         return None
-    except: return None
 
-def calcular_indicadores(df):
+def calcular_indicadores_tecnicos(df):
+    if df is None or len(df) < 20: return None
+    
     close = df['Close']
     high = df['High']
     low = df['Low']
     
-    # Médias Setup
+    # Médias Móveis
     df['EMA21'] = ta.trend.EMAIndicator(close, window=21).ema_indicator()
     df['SMA50'] = ta.trend.SMAIndicator(close, window=50).sma_indicator()
+    df['SMA200'] = ta.trend.SMAIndicator(close, window=200).sma_indicator() # Importante para Macro
     
     # Osciladores
+    df['RSI'] = ta.momentum.RSIIndicator(close, window=14).rsi()
     df['MACD'] = ta.trend.MACD(close).macd()
     df['MACD_Signal'] = ta.trend.MACD(close).macd_signal()
-    df['RSI'] = ta.momentum.RSIIndicator(close, window=14).rsi()
     df['ADX'] = ta.trend.ADXIndicator(high, low, close, window=14).adx()
     df['ATR'] = ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range()
-
-    # --- CÁLCULO DE VOLATILIDADE HISTÓRICA (Substituto Robusto para IV) ---
+    
+    # === PRICE ACTION (SUPORTE E RESISTÊNCIA) ===
+    # Canal de Donchian de 20 períodos (Máxima das últimas 20 velas e Mínima das últimas 20)
+    # Isso define topos e fundos relevantes automaticamente
+    df['Resistencia_20'] = high.rolling(window=20).max().shift(1) # Shift 1 para não olhar o candle atual como resistência dele mesmo
+    df['Suporte_20'] = low.rolling(window=20).min().shift(1)
+    
+    # Volatilidade Histórica (Apenas necessário no Diário, mas calculamos geral)
     df['Log_Ret'] = np.log(close / close.shift(1))
-    
-    # Volatilidade Curta (20 dias) - Representa o momento ATUAL
     df['HV20'] = df['Log_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
-    
-    # Volatilidade Média (50 dias) - Representa a "Normalidade" do papel
     df['HV50'] = df['Log_Ret'].rolling(window=50).std() * np.sqrt(252) * 100
-
+    
     return df
 
-def criar_grafico_candle(df, ticker):
-    # Cria a figura base
-    fig = go.Figure()
-
-    # 1. Adiciona os Candlesticks
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'],
-        name=f'{ticker} Price',
-        increasing_line_color='#26A69A', # Verde bonito
-        decreasing_line_color='#EF5350'  # Vermelho bonito
-    ))
-
-    # 2. Adiciona as Médias do seu Setup (se elas existirem no DF)
-    if 'EMA21' in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA21'], mode='lines', name='EMA21 (Rápida)', line=dict(color='cyan', width=1.5)))
-    if 'SMA50' in df.columns:
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], mode='lines', name='SMA50 (Lenta)', line=dict(color='yellow', width=1.5)))
-
-    # 3. Ajustes de Layout (Visual Profissional)
-    fig.update_layout(
-        title=f"Gráfico Técnico: {ticker}",
-        yaxis_title='Preço (R$)',
-        template="plotly_dark",   # Tema escuro para combinar com o mercado
-        xaxis_rangeslider_visible=False, # Remove a barra de rolagem inferior (ocupa muito espaço)
-        height=600, # Altura do gráfico
-        margin=dict(l=50, r=50, t=50, b=50),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1) # Legenda no topo
-    )
-    return fig
-
-def analisar_ativo(ticker, df):
+def analisar_timeframe_individual(df, periodo_nome):
+    """Analisa um único timeframe e retorna o viés."""
+    if df is None: return {"Viés": "N/A", "Score": 0, "Detalhe": "Dados Insuficientes"}
+    
     last = df.iloc[-1]
     
+    vies = "NEUTRO"
     score = 0
-    direcao = "NEUTRO"
-    setup_sugerido = "-"
     motivos = []
     
-    stop_loss = 0.0
-    alvo_gain = 0.0
-    
-    # 1. TENDÊNCIA
-    # ALTA
+    # 1. Estrutura de Médias (Trend Following)
     if (last['Close'] > last['EMA21']) and (last['EMA21'] > last['SMA50']):
-        direcao = "ALTA"
+        vies = "ALTA"
         score += 2
-        
-        if last['MACD'] > last['MACD_Signal']: score += 1
-        else: motivos.append("MACD Cruzado Venda")
-        
-        if last['RSI'] > 50: score += 1
-        else: motivos.append("RSI Fraco")
-        
-        stop_loss = last['Close'] - (1.0 * last['ATR'])
-        alvo_gain = last['Close'] + (1.3 * last['ATR'])
-
-    # BAIXA
+        motivos.append("Médias Alinhadas (Alta)")
     elif (last['Close'] < last['EMA21']) and (last['EMA21'] < last['SMA50']):
-        direcao = "BAIXA"
+        vies = "BAIXA"
         score += 2
-        
-        if last['MACD'] < last['MACD_Signal']: score += 1
-        else: motivos.append("MACD Cruzado Compra (Repique)")
-        
-        if last['RSI'] < 50: score += 1
-        else: motivos.append("RSI Alto")
-        
-        stop_loss = last['Close'] + (1.0 * last['ATR'])
-        alvo_gain = last['Close'] - (1.3 * last['ATR'])
-
+        motivos.append("Médias Alinhadas (Baixa)")
     else:
-        motivos.append("Sem Tendência Definida")
+        motivos.append("Médias Cruzadas/Lateral")
 
-    # 2. STATUS DA VOLATILIDADE (O Pulo do Gato)
-    # Compara a volatilidade de agora (HV20) com a média recente (HV50)
-    vol_status = "NORMAL"
-    if last['HV20'] < last['HV50'] * 0.9:
-        vol_status = "📉 BAIXA (Barata)"
-        cond_vol = "baixa"
-    elif last['HV20'] > last['HV50'] * 1.2:
-        vol_status = "📈 ALTA (Cara)"
-        cond_vol = "alta"
-    else:
-        vol_status = "⚖️ MÉDIA"
-        cond_vol = "media"
+    # 2. Momentum (MACD)
+    if vies == "ALTA" and last['MACD'] > last['MACD_Signal']:
+        score += 1
+        motivos.append("MACD Compra")
+    elif vies == "BAIXA" and last['MACD'] < last['MACD_Signal']:
+        score += 1
+        motivos.append("MACD Venda")
 
-    # 3. ESTRATÉGIA FINAL
-    if direcao != "NEUTRO":
-        if last['ADX'] > 20: score += 1
-        else: motivos.append("ADX Baixo (Lento)")
+    # 3. Price Action Simples (Proximidade do Rompimento)
+    dist_resistencia = (last['Resistencia_20'] - last['Close']) / last['Close']
+    dist_suporte = (last['Close'] - last['Suporte_20']) / last['Close']
+    
+    pa_status = ""
+    if vies == "ALTA":
+        if last['Close'] > last['Resistencia_20']: pa_status = "ROMPIMENTO DE TOPO 🚀"
+        elif dist_resistencia < 0.02: pa_status = "Testando Resistência"
+        else: pa_status = "Dentro do Canal"
+    elif vies == "BAIXA":
+        if last['Close'] < last['Suporte_20']: pa_status = "PERDA DE FUNDO 📉"
+        elif dist_suporte < 0.02: pa_status = "Testando Suporte"
+        else: pa_status = "Dentro do Canal"
         
-        if score >= 4:
-            # Lógica Combinada: Força (ADX) + Preço da Volatilidade
-            if last['ADX'] > 30 and cond_vol != "alta":
-                setup_sugerido = "A SECO 🚀"
-            elif cond_vol == "alta":
-                setup_sugerido = "TRAVA (Proteção) 🛡️"
-            else:
-                setup_sugerido = "TRAVA ou SECO"
-        else:
-            setup_sugerido = "AGUARDAR"
-            
-    # % para o Alvo
-    pct_alvo = 0.0
-    if direcao == "ALTA": pct_alvo = ((alvo_gain - last['Close']) / last['Close']) * 100
-    elif direcao == "BAIXA": pct_alvo = ((last['Close'] - alvo_gain) / last['Close']) * 100
-
     return {
-        "Ativo": ticker,
-        "Preço": f"R$ {last['Close']:.2f}",
-        "Direção": direcao,
-        "Score Num": score,
-        "Score": f"{score}/5",
-        "Setup": setup_sugerido,
-        "Volatilidade": vol_status,
-        "HV20": f"{last['HV20']:.1f}%",
-        "Stop": f"R$ {stop_loss:.2f}",
-        "Alvo": f"R$ {alvo_gain:.2f} ({abs(pct_alvo):.1f}%)",
-        "Retorno_Pct": abs(pct_alvo), # <--- CAMPO NOVO PARA O GRÁFICO
+        "Viés": vies,
+        "Score": score,
+        "RSI": last['RSI'],
+        "PA_Status": pa_status,
+        "Suporte": last['Suporte_20'],
+        "Resistencia": last['Resistencia_20'],
         "Motivos": ", ".join(motivos)
     }
 
+def analisar_ativo_completo(ticker, dados_dict):
+    # Prepara DataFrames
+    df_d = calcular_indicadores_tecnicos(dados_dict["D"])
+    df_w = calcular_indicadores_tecnicos(dados_dict["W"])
+    df_120 = calcular_indicadores_tecnicos(dados_dict["120"])
+    
+    if df_d is None: return None
+
+    # Analisa cada tempo gráfico
+    analise_w = analisar_timeframe_individual(df_w, "Semanal")
+    analise_d = analisar_timeframe_individual(df_d, "Diário")
+    analise_120 = analisar_timeframe_individual(df_120, "120min")
+    
+    last_d = df_d.iloc[-1]
+    
+    # === LÓGICA MESTRA (CONFLUÊNCIA) ===
+    score_final = 0
+    decisao_final = "NEUTRO"
+    setup_sugerido = "-"
+    obs_final = []
+
+    # O Diário é o Mandante (Gatilho)
+    # O Semanal é o Filtro (Permissão)
+    
+    # Call/Alta
+    if analise_d['Viés'] == "ALTA":
+        if analise_w['Viés'] in ["ALTA", "NEUTRO"]: # Semanal não pode ser Baixa
+            score_final += 3
+            decisao_final = "ALTA"
+            
+            # Bonificação por confluência total
+            if analise_w['Viés'] == "ALTA": 
+                score_final += 1
+                obs_final.append("Confluência Semanal ✅")
+            
+            # Bonificação pelo 120min (Sintonia fina)
+            if analise_120['Viés'] == "ALTA":
+                score_final += 1
+                obs_final.append("Intraday Alinhado ⏱️")
+            
+            # Price Action Diário
+            if "ROMPIMENTO" in analise_d['PA_Status']:
+                score_final += 1
+                obs_final.append("Breakout Diário 🔥")
+    
+    # Put/Baixa
+    elif analise_d['Viés'] == "BAIXA":
+        if analise_w['Viés'] in ["BAIXA", "NEUTRO"]:
+            score_final += 3
+            decisao_final = "BAIXA"
+            
+            if analise_w['Viés'] == "BAIXA": 
+                score_final += 1
+                obs_final.append("Confluência Semanal ✅")
+                
+            if analise_120['Viés'] == "BAIXA":
+                score_final += 1
+                obs_final.append("Intraday Alinhado ⏱️")
+                
+            if "PERDA" in analise_d['PA_Status']:
+                score_final += 1
+                obs_final.append("Breakdown Diário 🩸")
+
+    # Análise de Volatilidade (Opções)
+    vol_status = "NORMAL"
+    cond_vol = "media"
+    if last_d['HV20'] < last_d['HV50'] * 0.9:
+        vol_status = "📉 Barata"
+        cond_vol = "baixa"
+    elif last_d['HV20'] > last_d['HV50'] * 1.2:
+        vol_status = "📈 Cara"
+        cond_vol = "alta"
+
+    # Seleção de Setup
+    if decisao_final != "NEUTRO" and score_final >= 4:
+        if last_d['ADX'] > 25 and cond_vol != "alta":
+            setup_sugerido = "COMPRA A SECO (Gamma Long)"
+        elif cond_vol == "alta":
+            setup_sugerido = "TRAVA (Theta/Vega Short)"
+        else:
+            setup_sugerido = "TRAVA OU SECO"
+    else:
+        setup_sugerido = "AGUARDAR"
+
+    # Cálculo Stop/Alvo (Baseado no Diário)
+    atr = last_d['ATR']
+    if decisao_final == "ALTA":
+        stop = last_d['Close'] - (2 * atr) # Stop técnico mais largo para Swing
+        alvo = last_d['Close'] + (3 * atr) # Alvo 3:1 (Tentativa)
+    elif decisao_final == "BAIXA":
+        stop = last_d['Close'] + (2 * atr)
+        alvo = last_d['Close'] - (3 * atr)
+    else:
+        stop, alvo = 0, 0
+
+    return {
+        "Ativo": ticker,
+        "Preço": last_d['Close'],
+        "Direção": decisao_final,
+        "Score": score_final, # Max 6
+        "Setup": setup_sugerido,
+        "Volatilidade": vol_status,
+        "HV20": f"{last_d['HV20']:.1f}%",
+        "Stop": stop,
+        "Alvo": alvo,
+        "Observacoes": ", ".join(obs_final) if obs_final else "Aguardando confirmação",
+        # Dados brutos para o detalhamento
+        "analise_w": analise_w,
+        "analise_d": analise_d,
+        "analise_120": analise_120,
+        "df_chart": df_d # Para plotar depois
+    }
+
+def criar_grafico_mtf(df, ticker, analise_d):
+    # Gráfico Diário com Price Action
+    fig = go.Figure()
+
+    # Candles
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        name='Preço Daily'
+    ))
+
+    # Médias
+    if 'EMA21' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA21'], mode='lines', name='EMA21', line=dict(color='cyan', width=1)))
+    if 'SMA50' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], mode='lines', name='SMA50', line=dict(color='yellow', width=1)))
+        
+    # Price Action (Suporte/Resistencia Recentes) - Plota linhas horizontais do último valor
+    sup = analise_d.get('Suporte', 0)
+    res = analise_d.get('Resistencia', 0)
+    
+    # Adiciona linhas de suporte e resistência apenas se fizerem sentido visualmente (últimos 30 dias)
+    fig.add_shape(type="line", x0=df.index[-30], y0=res, x1=df.index[-1], y1=res, 
+                  line=dict(color="Red", width=1, dash="dash"), name="Resistência")
+    fig.add_shape(type="line", x0=df.index[-30], y0=sup, x1=df.index[-1], y1=sup, 
+                  line=dict(color="Green", width=1, dash="dash"), name="Suporte")
+    
+    fig.add_annotation(x=df.index[-5], y=res, text="Resistência", showarrow=False, yshift=10)
+    fig.add_annotation(x=df.index[-5], y=sup, text="Suporte", showarrow=False, yshift=-10)
+
+    fig.update_layout(
+        title=f"Análise Técnica Diária: {ticker}",
+        template="plotly_dark",
+        height=500,
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=50, r=50, t=50, b=50)
+    )
+    return fig
+
 # ================= INTERFACE =================
-st.title("⚡ Radar Opções: Preço & Volatilidade")
+st.title("🦅 Radar Opções Pro: MTF & Price Action")
 st.markdown("""
-**Rastreamento Automático de Oportunidades (Tendência + Volatilidade)**
-* **🎯 Direção:** Identifica tendências de Alta (Call) ou Baixa (Put) via Setup Gráfico.
-* **📊 Volatilidade:** Analisa se o prêmio está caro ou barato comparando a HV20 vs HV50.
-* **🛠️ Setup:** Sugere automaticamente se o ideal é operar **A Seco** (Explosão) ou com **Travas** (Proteção).
+**Metodologia Triple Screen Adaptada:**
+* **Semanal:** Define a tendência dominante (Segurança).
+* **Diário:** Define o Setup e os níveis de Suporte/Resistência (Gatilho).
+* **120 Min:** Refina a entrada intraday.
+* **Foco:** Swing Trade de Opções (15 a 40 dias úteis).
 """)
 
 # Sidebar
-analisar_tudo = st.sidebar.checkbox("Analisar IBrX 100 Completo")
-selecao = IBXX_FULL_LIST if analisar_tudo else st.sidebar.multiselect("Seleção:", IBXX_FULL_LIST, default=["PETR4", "VALE3", "PRIO3", "MGLU3", "BOVA11"])
+selecao = IBXX_FULL_LIST
+if not st.sidebar.checkbox("Analisar Lista Completa (Pode demorar)", value=False):
+    selecao = st.sidebar.multiselect("Carteira Personalizada:", IBXX_FULL_LIST, default=["PETR4", "VALE3", "BOVA11", "MGLU3", "PRIO3", "BBAS3"])
 
-if st.sidebar.button("🔍 Rodar Análise"):
+if st.sidebar.button("🔍 Iniciar Varredura"):
+    resultados = []
     
-    lista_alta = []
-    lista_baixa = []
-    lista_neutra = []
-    
-    barra = st.progress(0)
+    progresso = st.progress(0)
+    status_txt = st.empty()
     
     for i, ticker in enumerate(selecao):
-        df = obter_dados(ticker)
-        if df is not None:
-            df = calcular_indicadores(df)
-            res = analisar_ativo(ticker, df)
+        status_txt.text(f"Processando {ticker} (Baixando Diário, Semanal e Intraday)...")
+        
+        dados = obter_dados_multi_timeframe(ticker)
+        if dados:
+            res = analisar_ativo_completo(ticker, dados)
+            if res:
+                resultados.append(res)
+        
+        progresso.progress((i + 1) / len(selecao))
+    
+    status_txt.empty()
+    progresso.empty()
+    
+    # Organização dos resultados
+    df_res = pd.DataFrame(resultados)
+    
+    if not df_res.empty:
+        df_alta = df_res[df_res['Direção'] == "ALTA"].sort_values('Score', ascending=False)
+        df_baixa = df_res[df_res['Direção'] == "BAIXA"].sort_values('Score', ascending=False)
+        df_neutro = df_res[df_res['Direção'] == "NEUTRO"].sort_values('Score', ascending=False)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success(f"🚀 OPORTUNIDADES DE ALTA (CALL): {len(df_alta)}")
+            if not df_alta.empty:
+                st.dataframe(df_alta[['Ativo', 'Preço', 'Score', 'Setup', 'Volatilidade', 'Observacoes']], use_container_width=True, hide_index=True)
+        
+        with col2:
+            st.error(f"🩸 OPORTUNIDADES DE BAIXA (PUT): {len(df_baixa)}")
+            if not df_baixa.empty:
+                st.dataframe(df_baixa[['Ativo', 'Preço', 'Score', 'Setup', 'Volatilidade', 'Observacoes']], use_container_width=True, hide_index=True)
+        
+        with st.expander(f"⚠️ Radar de Observação / Neutros ({len(df_neutro)})"):
+            st.write("Ativos que não alinharam os 3 tempos gráficos ou estão sem tendência definida.")
+            if not df_neutro.empty:
+                st.dataframe(df_neutro[['Ativo', 'Preço', 'Volatilidade', 'Observacoes']], use_container_width=True, hide_index=True)
+        
+        # === ÁREA DE DETALHES (DRILL DOWN) ===
+        st.divider()
+        st.subheader("🕵️‍♂️ Detalhamento Técnico (Price Action & MTF)")
+        
+        ativos_disponiveis = df_res['Ativo'].tolist()
+        ativo_escolhido = st.selectbox("Selecione um ativo para Raio-X completo:", ativos_disponiveis)
+        
+        if ativo_escolhido:
+            data_ativo = next(item for item in resultados if item["Ativo"] == ativo_escolhido)
             
-            # Distribuição nas Listas
-            if res['Score Num'] >= 4:
-                # Remove chaves internas para exibição limpa
-                exibir = {k: v for k, v in res.items() if k not in ['Direção', 'Score Num', 'Motivos']}
-                # Adiciona Obs se for útil
-                exibir['Obs'] = res['Motivos'] if res['Motivos'] else "Setup Limpo"
-                
-                if res['Direção'] == "ALTA":
-                    lista_alta.append(exibir)
-                elif res['Direção'] == "BAIXA":
-                    lista_baixa.append(exibir)
+            # Métricas Principais
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Preço Atual", f"R$ {data_ativo['Preço']:.2f}")
+            c2.metric("Score MTF", f"{data_ativo['Score']}/6")
+            c3.metric("Stop Loss Est.", f"R$ {data_ativo['Stop']:.2f}")
+            c4.metric("Alvo Est.", f"R$ {data_ativo['Alvo']:.2f}")
+            
+            # Comparativo MTF
+            st.markdown("#### ⏳ Comparativo Multi-Timeframe")
+            
+            w = data_ativo['analise_w']
+            d = data_ativo['analise_d']
+            h = data_ativo['analise_120']
+            
+            # Tabela Estilizada Manualmente
+            cols = st.columns(3)
+            with cols[0]:
+                st.info("📅 SEMANAL (Macro)")
+                st.write(f"**Viés:** {w['Viés']}")
+                st.write(f"**RSI:** {w['RSI']:.1f}")
+                st.caption(f"Status: {w['PA_Status']}")
+            with cols[1]:
+                st.warning("📆 DIÁRIO (Gatilho)")
+                st.write(f"**Viés:** {d['Viés']}")
+                st.write(f"**RSI:** {d['RSI']:.1f}")
+                st.write(f"**Resistência:** {d['Resistencia']:.2f}")
+                st.write(f"**Suporte:** {d['Suporte']:.2f}")
+                st.caption(f"Status: {d['PA_Status']}")
+            with cols[2]:
+                st.success("⏱️ 120 MIN (Timing)")
+                st.write(f"**Viés:** {h['Viés']}")
+                st.write(f"**RSI:** {h['RSI']:.1f}")
+                st.caption(f"Status: {h['PA_Status']}")
+            
+            # Motivo de não indicação (se houver)
+            if data_ativo['Direção'] == "NEUTRO":
+                st.error(f"⛔ **Por que não entrar?** O Semanal está {w['Viés']} enquanto o Diário está {d['Viés']}. Falta alinhamento de tendência.")
             else:
-                lista_neutra.append(res)
-                
-        barra.progress((i + 1) / len(selecao))
-        
-    barra.empty()
-    
-    # === LAYOUT 2 COLUNAS ===
-    total_ativos = len(lista_alta) + len(lista_baixa) + len(lista_neutra)
-    bullish_pct = int((len(lista_alta) / total_ativos) * 100) if total_ativos > 0 else 0
-    bearish_pct = int((len(lista_baixa) / total_ativos) * 100) if total_ativos > 0 else 0
+                st.success(f"✅ **Sinal Confirmado:** {data_ativo['Observacoes']}")
 
-    st.divider()
-    m1, m2, m3 = st.columns(3)
-    m1.metric("🐂 Ativos em Alta", len(lista_alta), f"{bullish_pct}% do radar")
-    m2.metric("🐻 Ativos em Baixa", len(lista_baixa), f"-{bearish_pct}% do radar", delta_color="inverse")
-    m3.metric("⚖️ Em Observação", len(lista_neutra))
-    st.divider()
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🐂 CALL / ALTA")
-        if lista_alta:
-            st.dataframe(pd.DataFrame(lista_alta), use_container_width=True, hide_index=True)
-        else:
-            st.info("Sem oportunidades claras de Alta.")
-            
-    with col2:
-        st.subheader("🐻 PUT / BAIXA")
-        if lista_baixa:
-            st.dataframe(pd.DataFrame(lista_baixa), use_container_width=True, hide_index=True)
-        else:
-            st.info("Sem oportunidades claras de Baixa.")
-            
-    # === ÁREA DE OBSERVAÇÃO (EXPANDER) ===
-    st.divider()
-    with st.expander(f"📋 Zona de Observação / Reprovados ({len(lista_neutra)})", expanded=False):
-        if lista_neutra:
-            df_n = pd.DataFrame(lista_neutra)
-            # Ordena pelos melhores scores reprovados
-            df_n = df_n.sort_values(by="Score Num", ascending=False)
-            
-            # Seleciona colunas relevantes
-            cols_neutras = ["Ativo", "Preço", "Direção", "Score", "Volatilidade", "Motivos"]
-            st.dataframe(df_n[cols_neutras], use_container_width=True, hide_index=True)
-        else:
-            st.write("Nenhum ativo na lista de observação.")
+            # Gráfico
+            st.plotly_chart(criar_grafico_mtf(data_ativo['df_chart'], ativo_escolhido, d), use_container_width=True)
 
-# ================= ÁREA DO GRÁFICO INTERATIVO =================
-    st.divider()
-    st.subheader("📈 Análise Gráfica Detalhada (Candles)")
-
-    # Junta apenas os ativos que deram oportunidade (Alta + Baixa)
-    oportunidades_para_grafico = [item['Ativo'] for item in lista_alta + lista_baixa]
-
-    if oportunidades_para_grafico:
-        # Cria um selectbox para o usuário escolher qual gráfico ver
-        ativo_selecionado = st.selectbox("Selecione um ativo da lista para visualizar o gráfico:", oportunidades_para_grafico)
-        
-        if ativo_selecionado:
-            with st.spinner(f"Carregando gráfico de {ativo_selecionado}..."):
-                # Precisamos pegar os dados novamente para garantir que temos o histórico para o gráfico
-                # (Poderíamos usar session_state para otimizar, mas assim é mais simples por enquanto)
-                df_chart = obter_dados(ativo_selecionado)
-                
-                if df_chart is not None:
-                    # Recalcula os indicadores para plotar as médias
-                    df_chart = calcular_indicadores(df_chart)
-                    
-                    # Cria e exibe o gráfico
-                    figura_plotly = criar_grafico_candle(df_chart, ativo_selecionado)
-                    st.plotly_chart(figura_plotly, use_container_width=True)
-                else:
-                    st.error("Erro ao carregar dados para o gráfico.")
     else:
-        st.info("Rode a análise e aguarde encontrar oportunidades para visualizar os gráficos.")
+        st.warning("Nenhum dado retornado. Verifique a conexão ou a lista de ativos.")

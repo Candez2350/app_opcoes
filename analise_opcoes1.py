@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import numpy as np
 from datetime import datetime, timedelta
 
-# ================= CONFIGURAÇÃO =================
+# ================= CONFIGURAÇÃO VISUAL (UI DESIGNER) =================
 st.set_page_config(
     page_title="Vector 3 | Algorithmic Scanner", 
     page_icon="💠", 
@@ -14,6 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Inicialização do Session State
 if 'dados_analise' not in st.session_state:
     st.session_state.dados_analise = []
 if 'analise_realizada' not in st.session_state:
@@ -35,7 +36,7 @@ IBXX_FULL_LIST = [
 ]
 IBXX_FULL_LIST.sort()
 
-# ================= CÁLCULOS E DADOS =================
+# ================= MOTOR DE CÁLCULO (QUANT) =================
 
 def tratar_dataframe(df):
     if df.empty: return None
@@ -108,25 +109,31 @@ def analisar_timeframe_individual(df, periodo_nome):
     score = 0
     motivos = []
     
+    # 1. TENDÊNCIA
     if (last['Close'] > last['EMA21']) and (last['EMA21'] > last['SMA50']):
         vies = "ALTA"; score += 2; motivos.append("Tendência Alta")
     elif (last['Close'] < last['EMA21']) and (last['EMA21'] < last['SMA50']):
         vies = "BAIXA"; score += 2; motivos.append("Tendência Baixa")
     else: motivos.append("Lateral")
 
+    # 2. MOMENTUM
     macd_ok = False
     if vies == "ALTA" and last['MACD'] > last['MACD_Signal']:
         score += 1; macd_ok = True; motivos.append("MACD Compra")
     elif vies == "BAIXA" and last['MACD'] < last['MACD_Signal']:
         score += 1; macd_ok = True; motivos.append("MACD Venda")
 
+    # 3. PRICE ACTION (SUPORTE & RESISTÊNCIA)
     pivots_low, pivots_high = encontrar_pivos(df, window=5)
+    
+    # Suportes
     recent_lows = pivots_low.tail(30).values 
     suportes_abaixo = [p for p in recent_lows if p < preco_atual]
     sup_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
     sup_forte = df['Low'].tail(120).min()
     if abs(sup_imediato - sup_forte) / sup_forte < 0.01: sup_imediato = sup_forte
 
+    # Resistências
     recent_highs = pivots_high.tail(30).values
     resistencias_acima = [p for p in recent_highs if p > preco_atual]
     res_imediata = min(resistencias_acima) if resistencias_acima else (preco_atual * 1.1)
@@ -168,6 +175,7 @@ def analisar_ativo_completo(ticker, dados_dict):
     obs_final = []
     breakdown = {"Tendência Diária": 0, "MACD Diário": 0, "Confluência Semanal": 0, "Confluência Intraday": 0, "Price Action": 0}
 
+    # Lógica de Pontuação Vector 3
     if analise_d['Viés'] == "ALTA":
         score_final += 2; breakdown["Tendência Diária"] = 2
         if analise_d['MACD_OK']: score_final += 1; breakdown["MACD Diário"] = 1
@@ -225,7 +233,6 @@ def analisar_ativo_completo(ticker, dados_dict):
     }
 
 def gerar_relatorio_textual(data):
-    """Gera um texto explicativo estilo relatório de analista."""
     ticker = data['Ativo']
     direcao = data['Direção']
     score = data['Score']
@@ -235,19 +242,15 @@ def gerar_relatorio_textual(data):
     emoji = "🐂" if direcao == "ALTA" else ("🐻" if direcao == "BAIXA" else "⚖️")
     texto = f"### {emoji} Relatório Técnico: {ticker}\n\n"
     
-    # 1. Diagnóstico Geral
     texto += "**1. Diagnóstico Geral:**\n"
     if direcao == "NEUTRO":
         texto += f"O ativo encontra-se em zona de indefinição. O Score atual é de **{score}/6**. "
-        if d['Viés'] != w['Viés']:
-            texto += f"Divergência: Diário (**{d['Viés']}**) vs Semanal (**{w['Viés']}**).\n\n"
-        else:
-            texto += "O ativo está lateral.\n\n"
+        if d['Viés'] != w['Viés']: texto += f"Divergência: Diário (**{d['Viés']}**) vs Semanal (**{w['Viés']}**).\n\n"
+        else: texto += "O ativo está lateral.\n\n"
     else:
         forca = "Forte" if score >= 5 else "Moderada"
         texto += f"O ativo apresenta tendência de **{direcao}** com força **{forca}** (Score {score}/6).\n\n"
 
-    # 2. Pontos Positivos
     texto += "**2. Fundamentos da Tese (Pontos Positivos):**\n"
     if bk['Tendência Diária'] > 0: texto += "- ✅ **Tendência Diária:** Médias alinhadas a favor.\n"
     if bk['MACD Diário'] > 0: texto += "- ✅ **Momentum:** MACD confirmando o movimento.\n"
@@ -255,7 +258,6 @@ def gerar_relatorio_textual(data):
     if bk['Confluência Intraday'] > 0: texto += "- ✅ **Timing:** Intraday (120min) alinhado.\n"
     if bk['Price Action'] > 0: texto += f"- ✅ **Price Action:** Rompimento de {data['Direção'].lower()} detectado.\n"
     
-    # 3. Riscos
     riscos = []
     if bk['Confluência Semanal'] == 0 and direcao != "NEUTRO": riscos.append("Semanal ainda não confirmou (divergência).")
     if bk['Price Action'] == 0 and direcao != "NEUTRO": riscos.append("Preço ainda em congestão (sem rompimento claro).")
@@ -265,18 +267,17 @@ def gerar_relatorio_textual(data):
         texto += "\n**3. Pontos de Atenção (Riscos):**\n"
         for r in riscos: texto += f"- ⚠️ {r}\n"
     
-    # 4. Price Action (Correção da formatação)
     texto += "\n**4. Níveis Chave (Price Action):**\n"
     if direcao == "ALTA":
-        texto += f"- **Suporte (Stop):** Região de R$ {d['Sup_Imediato']:.2f}\n"
-        texto += f"- **Resistência (Alvo):** Região de R$ {d['Res_Imediata']:.2f}\n"
+        texto += f"- **Suporte (Stop):** Região de R\$ {d['Sup_Imediato']:.2f}\n"
+        texto += f"- **Resistência (Alvo):** Região de R\$ {d['Res_Imediata']:.2f}\n"
         texto += "- **Cenário:** Caminho livre até a resistência caso mantenha o suporte."
     elif direcao == "BAIXA":
-        texto += f"- **Resistência (Stop):** Região de R$ {d['Res_Imediata']:.2f}\n"
-        texto += f"- **Suporte (Alvo):** Região de R$ {d['Sup_Imediato']:.2f}\n"
+        texto += f"- **Resistência (Stop):** Região de R\$ {d['Res_Imediata']:.2f}\n"
+        texto += f"- **Suporte (Alvo):** Região de R\$ {d['Sup_Imediato']:.2f}\n"
         texto += "- **Cenário:** Espaço para cair até o suporte caso não rompa a resistência."
     else:
-        texto += f"- Ativo 'preso' entre **R$ {d['Sup_Imediato']:.2f}** e **R$ {d['Res_Imediata']:.2f}**."
+        texto += f"- Ativo 'preso' entre **R\$ {d['Sup_Imediato']:.2f}** e **R\$ {d['Res_Imediata']:.2f}**."
 
     return texto
 
@@ -301,25 +302,38 @@ def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
     fig.update_layout(title=f"{ticker} - {tipo_grafico}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=50, r=50, t=50, b=50), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-# ================= INTERFACE =================
+# ================= INTERFACE PRINCIPAL =================
 st.title("💠 VECTOR 3")
-st.markdown("### *Algoritmo de Fluxo & Estrutura de Mercado*")
-st.markdown("""
-> **Metodologia:** Triple Screen (Semanal/Diário/120m) • **Foco:** Price Action & Volatilidade • **Objetivo:** Swing Trade Direcional
+st.markdown("### *Algorithmic Market Scanner*")
+
+# --- SIDEBAR (LANDING PAGE INTERNA) ---
+st.sidebar.markdown("## 📘 Sobre o Vector 3")
+st.sidebar.info("""
+**O que é?**
+Um scanner quantitativo focado em Swing Trade de Opções. Elimina o ruído e foca na estrutura de preço.
+
+**Metodologia Triple Screen:**
+1.  **Semanal (Macro):** Define a maré. Não operamos contra ela.
+2.  **Diário (Gatilho):** Busca setups de Médias e Momentum.
+3.  **120 Min (Timing):** Refina a entrada intraday.
+
+**Parâmetros:**
+* **Trend Following:** EMA21 > SMA50.
+* **Price Action:** Pivôs e Suportes/Resistências automáticos.
+* **Gestão:** Stop Técnico (1.5x ATR) e Payoff.
 """)
-st.divider()
 
 selecao = IBXX_FULL_LIST
-if not st.sidebar.checkbox("Analisar Lista Completa", value=False):
-    selecao = st.sidebar.multiselect("Carteira:", IBXX_FULL_LIST, default=["PETR4", "VALE3", "BOVA11", "MGLU3", "PRIO3", "BBAS3"])
+if not st.sidebar.checkbox("Analisar IBrX 100 Completo", value=False):
+    selecao = st.sidebar.multiselect("Carteira Personalizada:", IBXX_FULL_LIST, default=["PETR4", "VALE3", "BOVA11", "MGLU3", "PRIO3", "BBAS3"])
 
-if st.sidebar.button("🔍 Iniciar Varredura"):
+if st.sidebar.button("🔍 Iniciar Varredura Vector 3"):
     resultados = []
     progresso = st.progress(0)
     status = st.empty()
     
     for i, ticker in enumerate(selecao):
-        status.text(f"Lendo {ticker}...")
+        status.text(f"Processando {ticker}...")
         dados = obter_dados_multi_timeframe(ticker)
         if dados:
             res = analisar_ativo_completo(ticker, dados)
@@ -330,6 +344,7 @@ if st.sidebar.button("🔍 Iniciar Varredura"):
     st.session_state.dados_analise = resultados
     st.session_state.analise_realizada = True
 
+# ================= EXIBIÇÃO RESULTADOS =================
 if st.session_state.analise_realizada:
     df_res = pd.DataFrame(st.session_state.dados_analise)
     cols = ['Ativo', 'Preço', 'Score', 'Setup', 'Stop_Tecnico', 'Observacoes']
@@ -352,13 +367,13 @@ if st.session_state.analise_realizada:
             if not df_baixa.empty: st.dataframe(df_baixa[cols], use_container_width=True, hide_index=True)
         
         with st.expander(f"⏳ Radar de Observação / Aguardando ({len(df_aguardando)})", expanded=True):
-            st.write("Ativos com tendência indefinida ou Score baixo (< 3).")
+            st.write("Ativos com tendência indefinida ou Score insuficiente (< 3).")
             if not df_aguardando.empty:
                 st.dataframe(df_aguardando[['Ativo', 'Preço', 'Direção', 'Score', 'Observacoes']], use_container_width=True, hide_index=True)
         
         st.divider()
         st.subheader("🕵️‍♂️ Detalhamento & Gráficos")
-        escolha = st.selectbox("Selecione Ativo:", df_res['Ativo'].tolist())
+        escolha = st.selectbox("Selecione Ativo para Raio-X:", df_res['Ativo'].tolist())
         
         if escolha:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
@@ -369,9 +384,8 @@ if st.session_state.analise_realizada:
             with tab_relatorio:
                 relatorio = gerar_relatorio_textual(d_ativo)
                 st.markdown(relatorio)
-                # Correção da concatenação do texto do Plano Sugerido
-                st.info(f"**Plano Sugerido:** Entrada próxima a R\$ {d_ativo['Preço']:.2f}, buscando Alvo em R\$ {d_ativo['Alvo']:.2f} com proteção em R\$ {d_ativo['Stop_Tecnico']:.2f}.")            
-            
+                st.info(f"**Plano Sugerido:** Entrada próxima a R\$ {d_ativo['Preço']:.2f}, buscando Alvo em R\$ {d_ativo['Alvo']:.2f} com proteção em R\$ {d_ativo['Stop_Tecnico']:.2f}.")
+
             with tab_score:
                 st.markdown("#### 🎯 Métricas Operacionais")
                 m1, m2, m3, m4 = st.columns(4)

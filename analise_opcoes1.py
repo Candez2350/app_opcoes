@@ -129,7 +129,6 @@ def analisar_timeframe_individual(df, periodo_nome):
     # 3. Price Action
     pivots_low, pivots_high = encontrar_pivos(df, window=5)
     
-    # Suportes
     recent_lows = pivots_low.tail(30).values 
     suportes_abaixo = [p for p in recent_lows if p < preco_atual]
     sup_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
@@ -137,7 +136,6 @@ def analisar_timeframe_individual(df, periodo_nome):
     sup_forte = df['Low'].tail(120).min()
     if abs(sup_imediato - sup_forte) / sup_forte < 0.01: sup_imediato = sup_forte
 
-    # Resistências
     recent_highs = pivots_high.tail(30).values
     resistencias_acima = [p for p in recent_highs if p > preco_atual]
     res_imediata = min(resistencias_acima) if resistencias_acima else (preco_atual * 1.1)
@@ -215,7 +213,7 @@ def analisar_ativo_completo(ticker, dados_dict):
         elif cond_vol == "alta": setup_sugerido = "TRAVA"
         else: setup_sugerido = "TRAVA OU SECO"
 
-    # === STOP TÉCNICO AJUSTADO (1.5x ATR) ===
+    # === STOP TÉCNICO (1.5x ATR) ===
     atr = last_d['ATR']
     stop_tecnico = 0.0
     alvo_tecnico = 0.0
@@ -257,7 +255,7 @@ def criar_grafico_mtf(df, ticker, analise_d):
     return fig
 
 # ================= INTERFACE =================
-st.title("🦅 Radar Opções Pro: Stop 1.5x & Análise Estrutural")
+st.title("🦅 Radar Opções Pro: Triple Screen & Metrics")
 
 selecao = IBXX_FULL_LIST
 if not st.sidebar.checkbox("Analisar Lista Completa", value=False):
@@ -304,7 +302,7 @@ if st.session_state.analise_realizada:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            # SCORECARD
+            # 1. SCORECARD
             st.markdown("#### 📝 Score Breakdown")
             bk = d_ativo['Breakdown']
             s1, s2, s3, s4, s5 = st.columns(5)
@@ -313,26 +311,38 @@ if st.session_state.analise_realizada:
             s4.metric("Intraday", fs(bk['Confluência Intraday'])); s5.metric("Price Action", fs(bk['Price Action']))
             
             st.divider()
+
+            # 2. MÉTRICAS TRIPLE SCREEN (RESTAURADO E MELHORADO)
+            st.markdown("#### 🎯 Métricas Operacionais")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Preço Atual", f"R$ {d_ativo['Preço']:.2f}")
+            m2.metric("Stop Técnico (1.5x ATR)", f"R$ {d_ativo['Stop_Tecnico']:.2f}")
             
-            # COMPARAÇÃO ESTRUTURAL
-            st.markdown("#### 📐 Níveis de Preço & Confluência")
+            # Lógica para mostrar o nível gráfico relevante para a direção
+            if d_ativo['Direção'] == "ALTA":
+                m3.metric("Sup. Imediato (Gráfico)", f"R$ {d['Sup_Imediato']:.2f}", help="Pivô de suporte mais recente")
+            else:
+                m3.metric("Res. Imediata (Gráfico)", f"R$ {d['Res_Imediata']:.2f}", help="Pivô de resistência mais recente")
+                
+            m4.metric("Alvo (3x ATR)", f"R$ {d_ativo['Alvo']:.2f}")
+
+            st.divider()
+            
+            # 3. DETALHAMENTO ESTRUTURAL
             col_w, col_d, col_h = st.columns(3)
             with col_w:
-                st.info("📅 SEMANAL (Macro)")
+                st.info("📅 SEMANAL")
                 st.write(f"Viés: **{w['Viés']}**")
                 st.caption(f"Motivo: {w['Motivos']}")
             with col_d:
-                st.warning("📆 DIÁRIO (Gatilho)")
+                st.warning("📆 DIÁRIO")
                 st.write(f"Viés: **{d['Viés']}**")
                 st.markdown("**Resistências:**")
-                st.code(f"Imediata: {d['Res_Imediata']:.2f}\nEstrutural: {d['Res_Forte']:.2f}")
+                st.code(f"Imed: {d['Res_Imediata']:.2f}\nForte:{d['Res_Forte']:.2f}")
                 st.markdown("**Suportes:**")
-                st.code(f"Imediato: {d['Sup_Imediato']:.2f}\nEstrutural: {d['Sup_Forte']:.2f}")
+                st.code(f"Imed: {d['Sup_Imediato']:.2f}\nForte:{d['Sup_Forte']:.2f}")
             with col_h:
-                st.success("⏱️ 120 MIN (Timing)")
+                st.success("⏱️ 120 MIN")
                 st.write(f"Viés: **{h['Viés']}**")
             
-            # INFO STOP
-            st.info(f"🛑 **Stop Técnico Sugerido (1.5x ATR):** R$ {d_ativo['Stop_Tecnico']:.2f} | **Alvo (3x ATR):** R$ {d_ativo['Alvo']:.2f}")
-
             st.plotly_chart(criar_grafico_mtf(d_ativo['df_chart'], escolha, d), use_container_width=True)

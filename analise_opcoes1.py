@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (MTF & Price Action)", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Radar Opções Master (Price Action 2.0)", page_icon="🦅", layout="wide")
 
 # Inicialização do Session State (Memória)
 if 'dados_analise' not in st.session_state:
@@ -40,18 +40,15 @@ def tratar_dataframe(df):
     if 'date' in df.columns:
         df = df.set_index('date')
     
-    # Padronização de nomes
     cols_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
     df = df.rename(columns=cols_map)
     
-    # Tratamento de zeros (Bug Yahoo)
     cols_price = ['Open', 'High', 'Low', 'Close']
     for c in cols_price:
         if c in df.columns:
             df[c] = df[c].replace(0, np.nan)
-    df = df.dropna(subset=['Close']) # Remove dias sem close
+    df = df.dropna(subset=['Close'])
     
-    # Preenchimento de High/Low/Open corrompidos
     mask_nan = df[['Open', 'High', 'Low']].isna().any(axis=1)
     if mask_nan.any():
         df.loc[mask_nan, 'Open'] = df.loc[mask_nan, 'Close']
@@ -60,26 +57,25 @@ def tratar_dataframe(df):
 
     return df
 
-@st.cache_data(ttl=1800) # Cache de 30 min
+@st.cache_data(ttl=1800)
 def obter_dados_multi_timeframe(ticker):
     if not ticker.endswith(".SA"): ticker += ".SA"
     
     try:
         t = Ticker(ticker)
         
-        # 1. Dados Diários (Principal) - Pega 1 ano para médias longas
+        # 1. Dados Diários
         df_d = t.history(period='1y', interval='1d')
         df_d = tratar_dataframe(df_d)
         
-        # 2. Dados Semanais (Tendência Macro)
+        # 2. Dados Semanais
         df_w = t.history(period='2y', interval='1wk')
         df_w = tratar_dataframe(df_w)
 
-        # 3. Dados Intraday (Para gerar 120min) - Yahoo limita intraday a 60dias aprox
+        # 3. Dados Intraday
         df_h = t.history(period='60d', interval='60m')
         df_h = tratar_dataframe(df_h)
         
-        # Resample de 60m para 120m (2H)
         df_120 = None
         if df_h is not None and not df_h.empty:
             agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
@@ -89,8 +85,29 @@ def obter_dados_multi_timeframe(ticker):
         
         return {"D": df_d, "W": df_w, "120": df_120}
         
-    except Exception as e:
+    except Exception:
         return None
+
+def encontrar_pivos(df, window=5):
+    """
+    Identifica Topos e Fundos locais (Price Action).
+    Retorna os valores dos pivôs mais recentes.
+    """
+    # Identifica máximas locais (Resistências) e mínimas locais (Suportes)
+    # window=5 significa que ele olha 2 candles antes e 2 depois para confirmar o bico
+    df['Min_Local'] = df['Low'].rolling(window=window, center=True).min()
+    df['Max_Local'] = df['High'].rolling(window=window, center=True).max()
+    
+    # Um candle é pivô de baixa se o Low dele for igual ao Min_Local
+    is_pivot_low = (df['Low'] == df['Min_Local'])
+    # Um candle é pivô de alta se o High dele for igual ao Max_Local
+    is_pivot_high = (df['High'] == df['Max_Local'])
+    
+    # Filtra apenas os valores onde ocorreram pivôs
+    pivots_low = df[is_pivot_low]['Low']
+    pivots_high = df[is_pivot_high]['High']
+    
+    return pivots_low, pivots_high
 
 def calcular_indicadores_tecnicos(df):
     if df is None or len(df) < 20: return None
@@ -99,7 +116,7 @@ def calcular_indicadores_tecnicos(df):
     high = df['High']
     low = df['Low']
     
-    # Médias Móveis
+    # Médias Setup
     df['EMA21'] = ta.trend.EMAIndicator(close, window=21).ema_indicator()
     df['SMA50'] = ta.trend.SMAIndicator(close, window=50).sma_indicator()
     
@@ -110,12 +127,7 @@ def calcular_indicadores_tecnicos(df):
     df['ADX'] = ta.trend.ADXIndicator(high, low, close, window=14).adx()
     df['ATR'] = ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range()
     
-    # === PRICE ACTION (SUPORTE E RESISTÊNCIA) ===
-    # Canal de Donchian de 20 períodos
-    df['Resistencia_20'] = high.rolling(window=20).max().shift(1)
-    df['Suporte_20'] = low.rolling(window=20).min().shift(1)
-    
-    # Volatilidade Histórica
+    # Volatilidade
     df['Log_Ret'] = np.log(close / close.shift(1))
     df['HV20'] = df['Log_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
     df['HV50'] = df['Log_Ret'].rolling(window=50).std() * np.sqrt(252) * 100
@@ -126,6 +138,7 @@ def analisar_timeframe_individual(df, periodo_nome):
     if df is None: return {"Viés": "N/A", "Score": 0, "Detalhe": "Dados Insuficientes"}
     
     last = df.iloc[-1]
+    preco_atual = last['Close']
     
     vies = "NEUTRO"
     score = 0
@@ -135,11 +148,11 @@ def analisar_timeframe_individual(df, periodo_nome):
     if (last['Close'] > last['EMA21']) and (last['EMA21'] > last['SMA50']):
         vies = "ALTA"
         score += 2
-        motivos.append("Médias Alinhadas")
+        motivos.append("Médias Alta")
     elif (last['Close'] < last['EMA21']) and (last['EMA21'] < last['SMA50']):
         vies = "BAIXA"
         score += 2
-        motivos.append("Médias Alinhadas")
+        motivos.append("Médias Baixa")
     else:
         motivos.append("Lateral")
 
@@ -151,27 +164,47 @@ def analisar_timeframe_individual(df, periodo_nome):
         score += 1
         motivos.append("MACD Venda")
 
-    # 3. Price Action Simples
-    dist_resistencia = (last['Resistencia_20'] - last['Close']) / last['Close']
-    dist_suporte = (last['Close'] - last['Suporte_20']) / last['Close']
+    # 3. PRICE ACTION AVANÇADO (Pivôs)
+    # Calcula os pivôs históricos
+    pivots_low, pivots_high = encontrar_pivos(df, window=5)
     
-    pa_status = ""
+    # Pega os últimos 60 dias para buscar suportes/resistências relevantes
+    # (Não queremos suportes de 1 ano atrás)
+    recent_lows = pivots_low.tail(20).values # Últimos 20 pivôs de baixa detectados
+    recent_highs = pivots_high.tail(20).values # Últimos 20 pivôs de alta detectados
+    
+    # Encontrar Suporte Imediato (O maior valor abaixo do preço atual)
+    suportes_abaixo = [p for p in recent_lows if p < preco_atual]
+    suporte_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
+    
+    # Encontrar Resistência Imediata (O menor valor acima do preço atual)
+    resistencias_acima = [p for p in recent_highs if p > preco_atual]
+    resistencia_imediata = min(resistencias_acima) if resistencias_acima else (preco_atual * 1.1)
+    
+    # Lógica de Rompimento e Teste
+    dist_res = (resistencia_imediata - preco_atual) / preco_atual
+    dist_sup = (preco_atual - suporte_imediato) / preco_atual
+    
+    pa_status = "Dentro de Canal"
+    
     if vies == "ALTA":
-        if last['Close'] > last['Resistencia_20']: pa_status = "ROMPIMENTO DE TOPO 🚀"
-        elif dist_resistencia < 0.02: pa_status = "Testando Resistência"
-        else: pa_status = "Dentro do Canal"
+        # Se estiver muito perto da resistencia (menos de 1.5%)
+        if dist_res < 0.015: pa_status = "⚠️ Testando Resistência"
+        elif preco_atual > resistencia_imediata: pa_status = "🚀 Rompimento Confirmado"
+        else: pa_status = "📈 Caminho Livre"
+        
     elif vies == "BAIXA":
-        if last['Close'] < last['Suporte_20']: pa_status = "PERDA DE FUNDO 📉"
-        elif dist_suporte < 0.02: pa_status = "Testando Suporte"
-        else: pa_status = "Dentro do Canal"
+        if dist_sup < 0.015: pa_status = "⚠️ Testando Suporte"
+        elif preco_atual < suporte_imediato: pa_status = "🩸 Perda de Fundo"
+        else: pa_status = "📉 Caminho Livre"
         
     return {
         "Viés": vies,
         "Score": score,
         "RSI": last['RSI'],
         "PA_Status": pa_status,
-        "Suporte": last['Suporte_20'],
-        "Resistencia": last['Resistencia_20'],
+        "Suporte": suporte_imediato,
+        "Resistencia": resistencia_imediata,
         "Motivos": ", ".join(motivos)
     }
 
@@ -193,9 +226,7 @@ def analisar_ativo_completo(ticker, dados_dict):
     setup_sugerido = "-"
     obs_final = []
 
-    # O Diário é o Mandante (Gatilho)
-    # O Semanal é o Filtro (Permissão)
-    
+    # Confluência
     if analise_d['Viés'] == "ALTA":
         if analise_w['Viés'] in ["ALTA", "NEUTRO"]: 
             score_final += 3
@@ -207,9 +238,9 @@ def analisar_ativo_completo(ticker, dados_dict):
             if analise_120['Viés'] == "ALTA":
                 score_final += 1
                 obs_final.append("Intraday ✅")
-            if "ROMPIMENTO" in analise_d['PA_Status']:
+            if "Caminho Livre" in analise_d['PA_Status'] or "Rompimento" in analise_d['PA_Status']:
                 score_final += 1
-                obs_final.append("Breakout 🔥")
+                obs_final.append("Price Action Favorável 🔥")
     
     elif analise_d['Viés'] == "BAIXA":
         if analise_w['Viés'] in ["BAIXA", "NEUTRO"]:
@@ -222,9 +253,9 @@ def analisar_ativo_completo(ticker, dados_dict):
             if analise_120['Viés'] == "BAIXA":
                 score_final += 1
                 obs_final.append("Intraday ✅")
-            if "PERDA" in analise_d['PA_Status']:
+            if "Caminho Livre" in analise_d['PA_Status'] or "Perda" in analise_d['PA_Status']:
                 score_final += 1
-                obs_final.append("Breakdown 🩸")
+                obs_final.append("Price Action Favorável 🩸")
 
     # Volatilidade
     vol_status = "NORMAL"
@@ -250,11 +281,11 @@ def analisar_ativo_completo(ticker, dados_dict):
     # Alvos/Stop
     atr = last_d['ATR']
     if decisao_final == "ALTA":
-        stop = last_d['Close'] - (2 * atr)
-        alvo = last_d['Close'] + (3 * atr)
+        stop = analise_d['Suporte'] # Stop técnico no último fundo detectado
+        alvo = last_d['Close'] + (2 * (last_d['Close'] - stop)) if stop < last_d['Close'] else last_d['Close'] + (3*atr)
     elif decisao_final == "BAIXA":
-        stop = last_d['Close'] + (2 * atr)
-        alvo = last_d['Close'] - (3 * atr)
+        stop = analise_d['Resistencia'] # Stop técnico no último topo detectado
+        alvo = last_d['Close'] - (2 * (stop - last_d['Close'])) if stop > last_d['Close'] else last_d['Close'] - (3*atr)
     else:
         stop, alvo = 0, 0
 
@@ -291,14 +322,18 @@ def criar_grafico_mtf(df, ticker, analise_d):
     sup = analise_d.get('Suporte', 0)
     res = analise_d.get('Resistencia', 0)
     
-    # Linhas de PA
-    fig.add_shape(type="line", x0=df.index[-30], y0=res, x1=df.index[-1], y1=res, 
-                  line=dict(color="Red", width=1, dash="dash"), name="Resistência")
-    fig.add_shape(type="line", x0=df.index[-30], y0=sup, x1=df.index[-1], y1=sup, 
-                  line=dict(color="Green", width=1, dash="dash"), name="Suporte")
+    # Adiciona linha de RESISTÊNCIA (Vermelho)
+    fig.add_shape(type="line", x0=df.index[-60], y0=res, x1=df.index[-1], y1=res, 
+                  line=dict(color="Red", width=1.5, dash="dash"))
+    fig.add_annotation(x=df.index[-1], y=res, text=f"Res: {res:.2f}", showarrow=False, yshift=10, font=dict(color="Red"))
+
+    # Adiciona linha de SUPORTE (Verde)
+    fig.add_shape(type="line", x0=df.index[-60], y0=sup, x1=df.index[-1], y1=sup, 
+                  line=dict(color="#00FF7F", width=1.5, dash="dash"))
+    fig.add_annotation(x=df.index[-1], y=sup, text=f"Sup: {sup:.2f}", showarrow=False, yshift=-10, font=dict(color="#00FF7F"))
     
     fig.update_layout(
-        title=f"Gráfico Diário + Price Action: {ticker}",
+        title=f"Gráfico Diário + Price Action (Pivôs): {ticker}",
         template="plotly_dark",
         height=500,
         xaxis_rangeslider_visible=False,
@@ -307,12 +342,12 @@ def criar_grafico_mtf(df, ticker, analise_d):
     return fig
 
 # ================= INTERFACE =================
-st.title("🦅 Radar Opções Pro: MTF & Price Action")
+st.title("🦅 Radar Opções Pro: MTF & Price Action 2.0")
 st.markdown("""
-**Metodologia Triple Screen Adaptada:**
-* **Semanal (Segurança):** Tendência Macro.
-* **Diário (Gatilho):** Setup + Suporte/Resistência.
-* **120 Min (Timing):** Refino intraday.
+**Metodologia Triple Screen + Pivôs:**
+* **Semanal:** Tendência Macro.
+* **Diário:** Identifica **Suportes e Resistências Locais** (não apenas extremos).
+* **120 Min:** Refino intraday.
 """)
 
 # Sidebar
@@ -341,11 +376,11 @@ if st.sidebar.button("🔍 Iniciar Varredura"):
     status_txt.empty()
     progresso.empty()
     
-    # SALVA NA MEMÓRIA (SESSION STATE)
+    # SALVA NA MEMÓRIA
     st.session_state.dados_analise = resultados
     st.session_state.analise_realizada = True
 
-# ================= EXIBIÇÃO DOS RESULTADOS (FORA DO IF DO BOTÃO) =================
+# ================= EXIBIÇÃO =================
 if st.session_state.analise_realizada:
     
     df_res = pd.DataFrame(st.session_state.dados_analise)
@@ -359,18 +394,18 @@ if st.session_state.analise_realizada:
         with col1:
             st.success(f"🚀 CALL / ALTA: {len(df_alta)}")
             if not df_alta.empty:
-                st.dataframe(df_alta[['Ativo', 'Preço', 'Score', 'Setup', 'Volatilidade', 'Observacoes']], use_container_width=True, hide_index=True)
+                st.dataframe(df_alta[['Ativo', 'Preço', 'Score', 'Setup', 'Stop', 'Alvo']], use_container_width=True, hide_index=True)
         
         with col2:
             st.error(f"🩸 PUT / BAIXA: {len(df_baixa)}")
             if not df_baixa.empty:
-                st.dataframe(df_baixa[['Ativo', 'Preço', 'Score', 'Setup', 'Volatilidade', 'Observacoes']], use_container_width=True, hide_index=True)
+                st.dataframe(df_baixa[['Ativo', 'Preço', 'Score', 'Setup', 'Stop', 'Alvo']], use_container_width=True, hide_index=True)
         
         with st.expander(f"⚠️ Neutros / Observação ({len(df_neutro)})"):
             if not df_neutro.empty:
                 st.dataframe(df_neutro[['Ativo', 'Preço', 'Volatilidade', 'Observacoes']], use_container_width=True, hide_index=True)
         
-        # === ÁREA DE DETALHES (PERSISTENTE) ===
+        # === DETALHAMENTO ===
         st.divider()
         st.subheader("🕵️‍♂️ Detalhamento Técnico")
         
@@ -378,14 +413,13 @@ if st.session_state.analise_realizada:
         ativo_escolhido = st.selectbox("Selecione um ativo para Raio-X completo:", ativos_disponiveis)
         
         if ativo_escolhido:
-            # Busca o ativo na memória
             data_ativo = next(item for item in st.session_state.dados_analise if item["Ativo"] == ativo_escolhido)
             
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Preço", f"R$ {data_ativo['Preço']:.2f}")
             c2.metric("Score", f"{data_ativo['Score']}/6")
-            c3.metric("Stop", f"R$ {data_ativo['Stop']:.2f}")
-            c4.metric("Alvo", f"R$ {data_ativo['Alvo']:.2f}")
+            c3.metric("Stop Técnico", f"R$ {data_ativo['Stop']:.2f}")
+            c4.metric("Alvo Est.", f"R$ {data_ativo['Alvo']:.2f}")
             
             st.markdown("#### ⏳ Comparativo Multi-Timeframe")
             w = data_ativo['analise_w']
@@ -397,19 +431,18 @@ if st.session_state.analise_realizada:
                 st.info("📅 SEMANAL")
                 st.write(f"Viés: **{w['Viés']}**")
                 st.write(f"RSI: {w['RSI']:.1f}")
-                st.caption(w['PA_Status'])
+                st.caption(f"Sup: {w['Suporte']:.2f} | Res: {w['Resistencia']:.2f}")
             with cols[1]:
-                st.warning("📆 DIÁRIO")
+                st.warning("📆 DIÁRIO (Gatilho)")
                 st.write(f"Viés: **{d['Viés']}**")
                 st.write(f"RSI: {d['RSI']:.1f}")
-                st.write(f"Resistência: {d['Resistencia']:.2f}")
-                st.write(f"Suporte: {d['Suporte']:.2f}")
+                st.markdown(f"**Resistência Imediata:** `{d['Resistencia']:.2f}`")
+                st.markdown(f"**Suporte Imediato:** `{d['Suporte']:.2f}`")
                 st.caption(d['PA_Status'])
             with cols[2]:
                 st.success("⏱️ 120 MIN")
                 st.write(f"Viés: **{h['Viés']}**")
                 st.write(f"RSI: {h['RSI']:.1f}")
-                st.caption(h['PA_Status'])
             
             st.plotly_chart(criar_grafico_mtf(data_ativo['df_chart'], ativo_escolhido, d), use_container_width=True)
 

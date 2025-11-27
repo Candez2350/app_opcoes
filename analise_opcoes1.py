@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ================= CONFIGURAÇÃO =================
-st.set_page_config(page_title="Radar Opções Master (Relatório IA)", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="Radar Opções Master (Layout Polido)", page_icon="🦅", layout="wide")
 
 if 'dados_analise' not in st.session_state:
     st.session_state.dados_analise = []
@@ -227,50 +227,51 @@ def gerar_relatorio_textual(data):
     bk = data['Breakdown']
     w, d = data['analise_w'], data['analise_d']
     
-    # 1. Título
     emoji = "🐂" if direcao == "ALTA" else ("🐻" if direcao == "BAIXA" else "⚖️")
     texto = f"### {emoji} Relatório Técnico: {ticker}\n\n"
     
-    # 2. Diagnóstico Geral
+    # 1. Diagnóstico Geral
     texto += "**1. Diagnóstico Geral:**\n"
     if direcao == "NEUTRO":
-        texto += f"O ativo encontra-se em zona de indefinição. O Score atual é de **{score}/6**, insuficiente para disparar um setup seguro. "
+        texto += f"O ativo encontra-se em zona de indefinição. O Score atual é de **{score}/6**. "
         if d['Viés'] != w['Viés']:
-            texto += f"Há uma divergência clara: O Diário aponta para **{d['Viés']}**, mas o Semanal (Macro) aponta para **{w['Viés']}**. Essa falta de alinhamento aumenta o risco de falsos rompimentos.\n\n"
+            texto += f"Divergência: Diário (**{d['Viés']}**) vs Semanal (**{w['Viés']}**).\n\n"
         else:
-            texto += "O ativo está lateral ou as médias ainda não se alinharam claramente.\n\n"
+            texto += "O ativo está lateral.\n\n"
     else:
         forca = "Forte" if score >= 5 else "Moderada"
-        texto += f"O ativo apresenta uma tendência de **{direcao}** com força **{forca}** (Score {score}/6). A estrutura de médias móveis no gráfico diário apoia esse movimento.\n\n"
+        texto += f"O ativo apresenta tendência de **{direcao}** com força **{forca}** (Score {score}/6).\n\n"
 
-    # 3. Pontos de Confirmação (Checklist)
-    texto += "**2. O que sustenta a tese (Pontos Positivos):**\n"
-    if bk['Tendência Diária'] > 0: texto += "- ✅ **Tendência Diária:** Médias alinhadas a favor do movimento.\n"
-    if bk['MACD Diário'] > 0: texto += "- ✅ **Momentum:** O MACD cruzou confirmando a força do movimento.\n"
-    if bk['Confluência Semanal'] > 0: texto += "- ✅ **Visão Macro:** O gráfico Semanal confirma a tendência, aumentando a segurança.\n"
-    if bk['Confluência Intraday'] > 0: texto += "- ✅ **Timing:** O intraday (120min) já está alinhado, sugerindo entrada imediata.\n"
-    if bk['Price Action'] > 0: texto += f"- ✅ **Price Action:** Houve um rompimento de {data['Direção'].lower()} importante recentemente.\n"
+    # 2. Pontos Positivos
+    texto += "**2. Fundamentos da Tese (Pontos Positivos):**\n"
+    if bk['Tendência Diária'] > 0: texto += "- ✅ **Tendência Diária:** Médias alinhadas a favor.\n"
+    if bk['MACD Diário'] > 0: texto += "- ✅ **Momentum:** MACD confirmando o movimento.\n"
+    if bk['Confluência Semanal'] > 0: texto += "- ✅ **Macro:** Gráfico Semanal alinhado.\n"
+    if bk['Confluência Intraday'] > 0: texto += "- ✅ **Timing:** Intraday (120min) alinhado.\n"
+    if bk['Price Action'] > 0: texto += f"- ✅ **Price Action:** Rompimento de {data['Direção'].lower()} detectado.\n"
     
-    # 4. Pontos de Atenção (Riscos)
+    # 3. Riscos
     riscos = []
-    if bk['Confluência Semanal'] == 0 and direcao != "NEUTRO": riscos.append("O gráfico Semanal ainda não confirmou totalmente (pode ser apenas um repique).")
-    if bk['Price Action'] == 0 and direcao != "NEUTRO": riscos.append("O preço ainda está dentro de uma congestão (não rompeu níveis chave).")
-    if bk['MACD Diário'] == 0 and direcao != "NEUTRO": riscos.append("O MACD está atrasado ou divergente.")
+    if bk['Confluência Semanal'] == 0 and direcao != "NEUTRO": riscos.append("Semanal ainda não confirmou (divergência).")
+    if bk['Price Action'] == 0 and direcao != "NEUTRO": riscos.append("Preço ainda em congestão (sem rompimento claro).")
+    if bk['MACD Diário'] == 0 and direcao != "NEUTRO": riscos.append("MACD atrasado ou divergente.")
     
     if riscos:
         texto += "\n**3. Pontos de Atenção (Riscos):**\n"
         for r in riscos: texto += f"- ⚠️ {r}\n"
     
-    # 5. Análise de Preço
+    # 4. Price Action (Correção da formatação)
     texto += "\n**4. Níveis Chave (Price Action):**\n"
     if direcao == "ALTA":
-        texto += f"O suporte imediato para posicionamento de stop está na região de **R$ {d['Sup_Imediato']:.2f}**. "
-        texto += f"O caminho está livre até a próxima resistência relevante em **R$ {d['Res_Imediata']:.2f}**."
+        texto += f"- **Suporte (Stop):** Região de R$ {d['Sup_Imediato']:.2f}\n"
+        texto += f"- **Resistência (Alvo):** Região de R$ {d['Res_Imediata']:.2f}\n"
+        texto += "- **Cenário:** Caminho livre até a resistência caso mantenha o suporte."
     elif direcao == "BAIXA":
-        texto += f"A resistência imediata para proteção está em **R$ {d['Res_Imediata']:.2f}**. "
-        texto += f"O preço tem espaço para buscar o suporte em **R$ {d['Sup_Imediato']:.2f}**."
+        texto += f"- **Resistência (Stop):** Região de R$ {d['Res_Imediata']:.2f}\n"
+        texto += f"- **Suporte (Alvo):** Região de R$ {d['Sup_Imediato']:.2f}\n"
+        texto += "- **Cenário:** Espaço para cair até o suporte caso não rompa a resistência."
     else:
-        texto += f"O ativo está imprensado entre o suporte de **R$ {d['Sup_Imediato']:.2f}** e a resistência de **R$ {d['Res_Imediata']:.2f}**."
+        texto += f"- Ativo 'preso' entre **R$ {d['Sup_Imediato']:.2f}** e **R$ {d['Res_Imediata']:.2f}**."
 
     return texto
 
@@ -353,12 +354,12 @@ if st.session_state.analise_realizada:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            # ABAS ATUALIZADAS
             tab_relatorio, tab_score, tab_data, tab_chart = st.tabs(["📋 Relatório de Análise", "📝 Scorecard & Métricas", "🔢 Dados Estruturais", "📊 Gráfico Interativo"])
             
             with tab_relatorio:
                 relatorio = gerar_relatorio_textual(d_ativo)
                 st.markdown(relatorio)
+                # Correção da concatenação do texto do Plano Sugerido
                 st.info(f"**Plano Sugerido:** Entrada próxima a R$ {d_ativo['Preço']:.2f}, buscando Alvo em R$ {d_ativo['Alvo']:.2f} com proteção em R$ {d_ativo['Stop_Tecnico']:.2f}.")
 
             with tab_score:

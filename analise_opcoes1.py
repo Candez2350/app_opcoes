@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import ta
+import plotly.graph_objects as go
 import numpy as np
 
 # ================= CONFIGURAÇÃO =================
@@ -62,6 +63,38 @@ def calcular_indicadores(df):
     df['HV50'] = df['Log_Ret'].rolling(window=50).std() * np.sqrt(252) * 100
 
     return df
+
+def criar_grafico_candle(df, ticker):
+    # Cria a figura base
+    fig = go.Figure()
+
+    # 1. Adiciona os Candlesticks
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['Open'], high=df['High'],
+        low=df['Low'], close=df['Close'],
+        name=f'{ticker} Price',
+        increasing_line_color='#26A69A', # Verde bonito
+        decreasing_line_color='#EF5350'  # Vermelho bonito
+    ))
+
+    # 2. Adiciona as Médias do seu Setup (se elas existirem no DF)
+    if 'EMA21' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA21'], mode='lines', name='EMA21 (Rápida)', line=dict(color='cyan', width=1.5)))
+    if 'SMA50' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], mode='lines', name='SMA50 (Lenta)', line=dict(color='yellow', width=1.5)))
+
+    # 3. Ajustes de Layout (Visual Profissional)
+    fig.update_layout(
+        title=f"Gráfico Técnico: {ticker}",
+        yaxis_title='Preço (R$)',
+        template="plotly_dark",   # Tema escuro para combinar com o mercado
+        xaxis_rangeslider_visible=False, # Remove a barra de rolagem inferior (ocupa muito espaço)
+        height=600, # Altura do gráfico
+        margin=dict(l=50, r=50, t=50, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1) # Legenda no topo
+    )
+    return fig
 
 def analisar_ativo(ticker, df):
     last = df.iloc[-1]
@@ -151,6 +184,7 @@ def analisar_ativo(ticker, df):
         "HV20": f"{last['HV20']:.1f}%",
         "Stop": f"R$ {stop_loss:.2f}",
         "Alvo": f"R$ {alvo_gain:.2f} ({abs(pct_alvo):.1f}%)",
+        "Retorno_Pct": abs(pct_alvo), # <--- CAMPO NOVO PARA O GRÁFICO
         "Motivos": ", ".join(motivos)
     }
 
@@ -241,23 +275,31 @@ if st.sidebar.button("🔍 Rodar Análise"):
         else:
             st.write("Nenhum ativo na lista de observação.")
 
+# ================= ÁREA DO GRÁFICO INTERATIVO =================
     st.divider()
-    st.subheader("🔎 Zoom no Gráfico")
-    
-    # Junta as oportunidades encontradas para o selectbox
-    oportunidades = [item['Ativo'] for item in lista_alta + lista_baixa]
-    
-    if oportunidades:
-        escolha = st.selectbox("Selecione um ativo para ver o gráfico técnico:", oportunidades)
+    st.subheader("📈 Análise Gráfica Detalhada (Candles)")
+
+    # Junta apenas os ativos que deram oportunidade (Alta + Baixa)
+    oportunidades_para_grafico = [item['Ativo'] for item in lista_alta + lista_baixa]
+
+    if oportunidades_para_grafico:
+        # Cria um selectbox para o usuário escolher qual gráfico ver
+        ativo_selecionado = st.selectbox("Selecione um ativo da lista para visualizar o gráfico:", oportunidades_para_grafico)
         
-        # Recupera os dados novamente (ou usa session_state se quiser otimizar)
-        df_chart = obter_dados(escolha)
-        df_chart = calcular_indicadores(df_chart)
-        
-        # Cria um gráfico simples com as médias
-        st.line_chart(df_chart[['Close', 'EMA21', 'SMA50']])
-        
-        # Dica: Se quiser candles, precisaria da biblioteca 'plotly', 
-        # mas o line_chart nativo já resolve rápido.
+        if ativo_selecionado:
+            with st.spinner(f"Carregando gráfico de {ativo_selecionado}..."):
+                # Precisamos pegar os dados novamente para garantir que temos o histórico para o gráfico
+                # (Poderíamos usar session_state para otimizar, mas assim é mais simples por enquanto)
+                df_chart = obter_dados(ativo_selecionado)
+                
+                if df_chart is not None:
+                    # Recalcula os indicadores para plotar as médias
+                    df_chart = calcular_indicadores(df_chart)
+                    
+                    # Cria e exibe o gráfico
+                    figura_plotly = criar_grafico_candle(df_chart, ativo_selecionado)
+                    st.plotly_chart(figura_plotly, use_container_width=True)
+                else:
+                    st.error("Erro ao carregar dados para o gráfico.")
     else:
-        st.write("Rode a análise para ver gráficos detalhados.")
+        st.info("Rode a análise e aguarde encontrar oportunidades para visualizar os gráficos.")

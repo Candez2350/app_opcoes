@@ -3,10 +3,11 @@ from yahooquery import Ticker
 import pandas as pd
 import ta
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
 from datetime import datetime, timedelta
 
-# ================= CONFIGURAÇÃO VISUAL (UI DESIGNER) =================
+# ================= CONFIGURAÇÃO VISUAL =================
 st.set_page_config(
     page_title="Vector 3 | Algorithmic Scanner", 
     page_icon="💠", 
@@ -14,7 +15,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inicialização do Session State
 if 'dados_analise' not in st.session_state:
     st.session_state.dados_analise = []
 if 'analise_realizada' not in st.session_state:
@@ -36,7 +36,7 @@ IBXX_FULL_LIST = [
 ]
 IBXX_FULL_LIST.sort()
 
-# ================= MOTOR DE CÁLCULO (QUANT) =================
+# ================= CÁLCULOS E DADOS =================
 
 def tratar_dataframe(df):
     if df.empty: return None
@@ -48,6 +48,8 @@ def tratar_dataframe(df):
     for c in cols_price:
         if c in df.columns: df[c] = df[c].replace(0, np.nan)
     df = df.dropna(subset=['Close'])
+    
+    # Tratamento de zeros
     mask_nan = df[['Open', 'High', 'Low']].isna().any(axis=1)
     if mask_nan.any():
         df.loc[mask_nan, 'Open'] = df.loc[mask_nan, 'Close']
@@ -63,10 +65,12 @@ def obter_dados_multi_timeframe(ticker):
         df_d = tratar_dataframe(t.history(period='1y', interval='1d'))
         df_w = tratar_dataframe(t.history(period='2y', interval='1wk'))
         df_h = tratar_dataframe(t.history(period='60d', interval='60m'))
+        
         df_120 = None
         if df_h is not None and not df_h.empty:
             agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
             df_120 = df_h.resample('2h').agg(agg_dict).dropna()
+
         if df_d is None or len(df_d) < 50: return None
         return {"D": df_d, "W": df_w, "120": df_120}
     except: return None
@@ -91,6 +95,11 @@ def calcular_indicadores_tecnicos(df):
     df['Log_Ret'] = np.log(close / close.shift(1))
     df['HV20'] = df['Log_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
     df['HV50'] = df['Log_Ret'].rolling(window=50).std() * np.sqrt(252) * 100
+    
+    # Pre-calculo para backtest (Resistência e Suporte Históricos)
+    df['Resistencia_Hist'] = df['High'].rolling(window=20).max().shift(1)
+    df['Suporte_Hist'] = df['Low'].rolling(window=20).min().shift(1)
+    
     return df
 
 def analisar_timeframe_individual(df, periodo_nome):
@@ -114,12 +123,15 @@ def analisar_timeframe_individual(df, periodo_nome):
         score += 1; macd_ok = True; motivos.append("MACD Venda")
 
     pivots_low, pivots_high = encontrar_pivos(df, window=5)
+    
+    # Suportes
     recent_lows = pivots_low.tail(30).values 
     suportes_abaixo = [p for p in recent_lows if p < preco_atual]
     sup_imediato = max(suportes_abaixo) if suportes_abaixo else (preco_atual * 0.9)
     sup_forte = df['Low'].tail(120).min()
     if abs(sup_imediato - sup_forte) / sup_forte < 0.01: sup_imediato = sup_forte
 
+    # Resistências
     recent_highs = pivots_high.tail(30).values
     resistencias_acima = [p for p in recent_highs if p > preco_atual]
     res_imediata = min(resistencias_acima) if resistencias_acima else (preco_atual * 1.1)
@@ -287,12 +299,105 @@ def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
     fig.update_layout(title=f"{ticker} - {tipo_grafico}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=50, r=50, t=50, b=50), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-# ================= INTERFACE: SIDEBAR =================
+# === NOVO: FUNÇÃO PARA GERAR BACKTEST ===
+def gerar_grafico_backtest(df_d, df_w, ticker):
+    """
+    Recalcula o Score Vector 3 para os últimos 20 dias e plota um gráfico combo.
+    Nota: Para performance, neste backtest usamos uma aproximação do semanal e ignoramos o intraday.
+    """
+    df_calc = df_d.tail(30).copy() # Pega 30 para garantir 20 de exibição
+    
+    scores = []
+    dates = []
+    prices = []
+    
+    for i in range(len(df_calc)):
+        if i < 1: continue # Pula o primeiro
+        
+        # Simula o 'hoje' histórico
+        row = df_calc.iloc[i]
+        date_curr = df_calc.index[i]
+        
+        # Pontuação Simplificada para Histórico (Daily + Price Action + Weekly Approx)
+        # Score Maximo aqui será 5 (ignorando Intraday 120m que é pesado para recalcular)
+        score_dia = 0
+        
+        # 1. Tendência Diária
+        if (row['Close'] > row['EMA21']) and (row['EMA21'] > row['SMA50']): score_dia += 2 # Alta
+        elif (row['Close'] < row['EMA21']) and (row['EMA21'] < row['SMA50']): score_dia += 2 # Baixa
+        
+        # 2. MACD
+        if (score_dia > 0): # Só pontua MACD se tiver tendência
+            # Se tendência alta e MACD > Signal
+            if (row['Close'] > row['EMA21']) and (row['MACD'] > row['MACD_Signal']): score_dia += 1
+            # Se tendência baixa e MACD < Signal
+            elif (row['Close'] < row['EMA21']) and (row['MACD'] < row['MACD_Signal']): score_dia += 1
+            
+        # 3. Price Action (Rompimento de 20 dias atrás)
+        if (score_dia > 0):
+            # Se alta e rompeu máxima de 20 dias
+            if (row['Close'] > row['EMA21']) and (row['Close'] > row['Resistencia_Hist']): score_dia += 1
+            # Se baixa e rompeu mínima de 20 dias
+            elif (row['Close'] < row['EMA21']) and (row['Close'] < row['Suporte_Hist']): score_dia += 1
+            
+        # 4. Semanal (Aproximação: Pega o semanal da época)
+        # Convertendo para timezone naive para comparação segura
+        try:
+            date_lookup = date_curr.replace(tzinfo=None)
+            # Encontra a vela semanal que contem este dia
+            # Como df_w tem index date, usamos asof ou reindex. Simplificando:
+            w_idx = df_w.index.get_indexer([date_lookup], method='pad')[0]
+            if w_idx != -1:
+                w_row = df_w.iloc[w_idx]
+                if (score_dia >= 2): # Só verifica semanal se diário tiver tendência
+                    if (row['Close'] > row['EMA21']) and (w_row['Close'] > w_row['EMA21']): score_dia += 1
+                    elif (row['Close'] < row['EMA21']) and (w_row['Close'] < w_row['EMA21']): score_dia += 1
+        except:
+            pass # Se falhar a data, mantém o score
+            
+        scores.append(score_dia)
+        dates.append(date_curr)
+        prices.append(row['Close'])
+        
+    # Criação do Gráfico Combo
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Bar Chart (Scores)
+    colors = ['#EF5350' if s < 3 else ('#FFEE58' if s == 3 else '#66BB6A') for s in scores]
+    
+    fig.add_trace(
+        go.Bar(x=dates, y=scores, name="Score Histórico", marker_color=colors, opacity=0.6),
+        secondary_y=False,
+    )
+
+    # Line Chart (Price)
+    fig.add_trace(
+        go.Scatter(x=dates, y=prices, name="Preço", line=dict(color='white', width=2)),
+        secondary_y=True,
+    )
+
+    fig.update_layout(
+        title=f"Backtest Visual: Score vs Preço ({ticker})",
+        template="plotly_dark",
+        height=400,
+        barmode='group',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    fig.update_yaxes(title_text="Score Vector 3", range=[0, 6], secondary_y=False)
+    fig.update_yaxes(title_text="Preço (R$)", secondary_y=True)
+
+    return fig
+
+# ================= INTERFACE =================
+st.title("💠 VECTOR 3")
+st.markdown("### *Algorithmic Market Scanner*")
+
+# --- SIDEBAR ---
 st.sidebar.markdown("## 💠 Vector 3")
 st.sidebar.markdown("---")
 st.sidebar.caption("Configuração de Análise")
 
-# Inputs limpos na Sidebar
 selecao = IBXX_FULL_LIST
 check_all = st.sidebar.checkbox("Analisar IBrX 100", value=False)
 if not check_all:
@@ -312,42 +417,29 @@ st.sidebar.markdown("""
 * Suportes e Resistências calculados dinamicamente via Pivôs.
 """)
 
-# ================= INTERFACE: ÁREA PRINCIPAL =================
-
-# --- TELA DE BOAS-VINDAS (LANDING PAGE) ---
+# --- BOAS VINDAS ---
 if not st.session_state.analise_realizada and not botao_analise:
-    # Cabeçalho Impactante
-    st.title("💠 VECTOR 3")
-    st.markdown("### *Algorithmic Market Scanner*")
     st.markdown("---")
-    
-    # Hero Section
     st.markdown("""
     ### 🎯 Pare de Adivinhar. Comece a Calcular.
     O **Vector 3** elimina o ruído do mercado e foca na estrutura de preço. 
-    Nossa engine processa múltiplos tempos gráficos (Semanal, Diário e 120min) para encontrar a confluência perfeita para Swing Trade de Opções.
+    Nossa engine processa múltiplos tempos gráficos para encontrar a confluência perfeita.
     """)
     st.markdown("---")
-
-    # Colunas de Features
     col1, col2, col3 = st.columns(3)
-    
     with col1:
         st.subheader("🌊 A Maré (Trend)")
         st.info("**Filtro Macro:** Só operamos a favor da tendência principal. Se o Semanal diz 'não', o Diário obedece.")
-    
     with col2:
         st.subheader("🌊 A Onda (Setup)")
         st.warning("**Gatilho Técnico:** Cruzamento de médias, Momentum (MACD) e quebra de estrutura (Price Action).")
-        
     with col3:
         st.subheader("🎯 O Timing (Entry)")
         st.success("**Sintonia Fina:** O gráfico de 120min confirma se o momento exato da entrada é agora.")
-
     st.divider()
     st.caption("👈 Selecione seus ativos na barra lateral e clique em 'SCANEAR MERCADO' para iniciar.")
 
-# --- LÓGICA DE PROCESSAMENTO ---
+# --- PROCESSAMENTO ---
 if botao_analise:
     resultados = []
     progresso = st.progress(0)
@@ -364,10 +456,9 @@ if botao_analise:
     status.empty(); progresso.empty()
     st.session_state.dados_analise = resultados
     st.session_state.analise_realizada = True
-    # Força o rerun para sair da tela de boas-vindas e ir para resultados
-    st.rerun() 
+    st.rerun()
 
-# --- EXIBIÇÃO DE RESULTADOS ---
+# --- RESULTADOS ---
 if st.session_state.analise_realizada:
     st.title("💠 VECTOR 3 | Resultados")
     df_res = pd.DataFrame(st.session_state.dados_analise)
@@ -384,26 +475,29 @@ if st.session_state.analise_realizada:
         
         c1, c2 = st.columns(2)
         with c1: 
-            st.success(f"🚀 Oportunidades de ALTA (Score 3+): {len(df_alta)}")
+            st.success(f"🚀 ALTA (Score 3+): {len(df_alta)}")
             if not df_alta.empty: st.dataframe(df_alta[cols], use_container_width=True, hide_index=True)
         with c2: 
-            st.error(f"🩸 Oportunidades de BAIXA (Score 3+): {len(df_baixa)}")
+            st.error(f"🩸 BAIXA (Score 3+): {len(df_baixa)}")
             if not df_baixa.empty: st.dataframe(df_baixa[cols], use_container_width=True, hide_index=True)
         
-        with st.expander(f"⏳ Em Observação / Neutros ({len(df_aguardando)})", expanded=False):
-            st.write("Ativos aguardando alinhamento de tendência ou rompimento.")
+        with st.expander(f"⏳ Radar de Observação / Aguardando ({len(df_aguardando)})", expanded=False):
+            st.write("Ativos com tendência indefinida ou Score insuficiente (< 3).")
             if not df_aguardando.empty:
                 st.dataframe(df_aguardando[['Ativo', 'Preço', 'Direção', 'Score', 'Observacoes']], use_container_width=True, hide_index=True)
         
         st.divider()
-        st.subheader("🕵️‍♂️ Raio-X Técnico")
-        escolha = st.selectbox("Selecione um ativo para análise detalhada:", df_res['Ativo'].tolist())
+        st.subheader("🕵️‍♂️ Detalhamento & Gráficos")
+        escolha = st.selectbox("Selecione Ativo para Raio-X:", df_res['Ativo'].tolist())
         
         if escolha:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            tab_relatorio, tab_score, tab_data, tab_chart = st.tabs(["📋 Relatório IA", "📝 Scorecard", "🔢 Dados Estruturais", "📊 Gráfico"])
+            # ABAS COM BACKTEST INCLUÍDO
+            tab_relatorio, tab_score, tab_data, tab_chart, tab_backtest = st.tabs([
+                "📋 Relatório IA", "📝 Scorecard", "🔢 Dados Estruturais", "📊 Gráfico", "🔙 Backtest (20d)"
+            ])
             
             with tab_relatorio:
                 relatorio = gerar_relatorio_textual(d_ativo)
@@ -444,3 +538,9 @@ if st.session_state.analise_realizada:
                 elif tf_selecionado == "Diário": fig = criar_grafico_dinamico(d_ativo['df_chart_d'], escolha, d, "Diário")
                 else: fig = criar_grafico_dinamico(d_ativo['df_chart_120'], escolha, d, "120 Minutos")
                 st.plotly_chart(fig, use_container_width=True)
+            
+            with tab_backtest:
+                st.markdown("#### ⏳ Histórico de Pontuação (Últimos 20 Pregões)")
+                st.caption("Visualiza a correlação entre o Score Vector 3 (Barras) e o Preço (Linha Branca). Barras Verdes indicam Score >= 4.")
+                fig_bt = gerar_grafico_backtest(d_ativo['df_chart_d'], d_ativo['df_chart_w'], escolha)
+                st.plotly_chart(fig_bt, use_container_width=True)

@@ -90,8 +90,11 @@ def calcular_indicadores_tecnicos(df):
     df['Log_Ret'] = np.log(close / close.shift(1))
     df['HV20'] = df['Log_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
     df['HV50'] = df['Log_Ret'].rolling(window=50).std() * np.sqrt(252) * 100
+    
+    # Pre-calculo para backtest
     df['Resistencia_Hist'] = df['High'].rolling(window=20).max().shift(1)
     df['Suporte_Hist'] = df['Low'].rolling(window=20).min().shift(1)
+    
     return df
 
 def analisar_timeframe_individual(df, periodo_nome):
@@ -162,6 +165,7 @@ def analisar_ativo_completo(ticker, dados_dict):
     obs_final = []
     breakdown = {"Tendência Diária": 0, "MACD Diário": 0, "Confluência Semanal": 0, "Confluência Intraday": 0, "Price Action": 0}
 
+    # === Lógica Principal Vector 3 ===
     if analise_d['Viés'] == "ALTA":
         score_final += 2; breakdown["Tendência Diária"] = 2
         if analise_d['MACD_OK']: score_final += 1; breakdown["MACD Diário"] = 1
@@ -186,15 +190,13 @@ def analisar_ativo_completo(ticker, dados_dict):
     elif last_d['HV20'] > last_d['HV50'] * 1.2: vol_status, cond_vol = "📈 Cara", "alta"
 
     setup_sugerido = "AGUARDAR"
-    if decisao_final != "NEUTRO" and score_final >= 4:
+    if decisao_final != "NEUTRO" and score_final >= 3: # Filtro flexível para exibição
         if last_d['ADX'] > 25 and cond_vol != "alta": setup_sugerido = "COMPRA A SECO"
         elif cond_vol == "alta": setup_sugerido = "TRAVA"
         else: setup_sugerido = "TRAVA OU SECO"
 
     atr = last_d['ATR']
-    stop_tecnico = 0.0
-    alvo_tecnico = 0.0
-    payoff = 0.0
+    stop_tecnico, alvo_tecnico, payoff = 0.0, 0.0, 0.0
     
     if decisao_final == "ALTA":
         stop_tecnico = last_d['Close'] - (1.5 * atr) 
@@ -230,9 +232,7 @@ def gerar_relatorio_textual(data):
     
     texto += "**1. Diagnóstico Geral:**\n"
     if direcao == "NEUTRO":
-        texto += f"O ativo encontra-se em zona de indefinição. O Score atual é de **{score}/6**. "
-        if d['Viés'] != w['Viés']: texto += f"Divergência: Diário (**{d['Viés']}**) vs Semanal (**{w['Viés']}**).\n\n"
-        else: texto += "O ativo está lateral.\n\n"
+        texto += f"O ativo encontra-se em zona de indefinição. O Score atual é de **{score}/6**."
     else:
         forca = "Forte" if score >= 5 else "Moderada"
         texto += f"O ativo apresenta tendência de **{direcao}** com força **{forca}** (Score {score}/6).\n\n"
@@ -247,7 +247,6 @@ def gerar_relatorio_textual(data):
     riscos = []
     if bk['Confluência Semanal'] == 0 and direcao != "NEUTRO": riscos.append("Semanal ainda não confirmou (divergência).")
     if bk['Price Action'] == 0 and direcao != "NEUTRO": riscos.append("Preço ainda em congestão (sem rompimento claro).")
-    if bk['MACD Diário'] == 0 and direcao != "NEUTRO": riscos.append("MACD atrasado ou divergente.")
     
     if riscos:
         texto += "\n**3. Pontos de Atenção (Riscos):**\n"
@@ -257,13 +256,9 @@ def gerar_relatorio_textual(data):
     if direcao == "ALTA":
         texto += f"- **Suporte (Stop):** Região de R\$ {d['Sup_Imediato']:.2f}\n"
         texto += f"- **Resistência (Alvo):** Região de R\$ {d['Res_Imediata']:.2f}\n"
-        texto += "- **Cenário:** Caminho livre até a resistência caso mantenha o suporte."
     elif direcao == "BAIXA":
         texto += f"- **Resistência (Stop):** Região de R\$ {d['Res_Imediata']:.2f}\n"
         texto += f"- **Suporte (Alvo):** Região de R\$ {d['Sup_Imediato']:.2f}\n"
-        texto += "- **Cenário:** Espaço para cair até o suporte caso não rompa a resistência."
-    else:
-        texto += f"- Ativo 'preso' entre **R\$ {d['Sup_Imediato']:.2f}** e **R\$ {d['Res_Imediata']:.2f}**."
 
     return texto
 
@@ -288,58 +283,68 @@ def criar_grafico_dinamico(df, ticker, analise_d, tipo_grafico):
     fig.update_layout(title=f"{ticker} - {tipo_grafico}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=50, r=50, t=50, b=50), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-# === NOVO: FUNÇÃO PARA GERAR TABELA BACKTEST ===
-def gerar_tabela_backtest(df_d, df_w, ticker):
+# === FUNÇÃO DE BACKTEST CORRIGIDA ===
+def gerar_tabela_backtest(df_d, df_w, d_ativo_atual):
     """
-    Recalcula o Score Vector 3 para os últimos 20 dias e retorna um DataFrame.
+    Gera tabela de backtest. A primeira linha (HOJE) é forçada a ser idêntica ao Scorecard.
     """
-    df_calc = df_d.tail(30).copy() # Pega 30 para garantir 20 de exibição
-    
+    df_calc = df_d.tail(30).copy() 
     history_data = []
     
-    # Itera de trás para frente para mostrar o mais recente primeiro, ou processa normal e inverte depois.
-    # Vamos processar normal e inverter no final.
+    # Loop normal
     for i in range(len(df_calc)):
         if i < 1: continue 
         
         row = df_calc.iloc[i]
         date_curr = df_calc.index[i]
         
-        # Recálculo Simplificado do Score (0 a 5)
-        score_dia = 0
-        detalhes = []
-        
-        # 1. Tendência
-        trend = "Lateral"
-        if (row['Close'] > row['EMA21']) and (row['EMA21'] > row['SMA50']): 
-            score_dia += 2; trend = "Alta"; detalhes.append("T")
-        elif (row['Close'] < row['EMA21']) and (row['EMA21'] < row['SMA50']): 
-            score_dia += 2; trend = "Baixa"; detalhes.append("T")
-        
-        # 2. MACD
-        if score_dia > 0:
-            if (trend == "Alta" and row['MACD'] > row['MACD_Signal']) or \
-               (trend == "Baixa" and row['MACD'] < row['MACD_Signal']):
-                score_dia += 1; detalhes.append("M")
+        # Se for a última data (Hoje), usamos os dados REAIS da análise completa
+        # Isso garante sincronia total entre Scorecard e Tabela Backtest
+        if i == len(df_calc) - 1:
+            bk = d_ativo_atual['Breakdown']
+            score_dia = d_ativo_atual['Score']
+            detalhes = []
+            if bk['Tendência Diária'] > 0: detalhes.append("T")
+            if bk['MACD Diário'] > 0: detalhes.append("M")
+            if bk['Confluência Semanal'] > 0: detalhes.append("W")
+            if bk['Confluência Intraday'] > 0: detalhes.append("I") # Intraday só aparece aqui
+            if bk['Price Action'] > 0: detalhes.append("P")
             
-        # 3. Price Action
-        if score_dia > 0:
-            if (trend == "Alta" and row['Close'] > row['Resistencia_Hist']) or \
-               (trend == "Baixa" and row['Close'] < row['Suporte_Hist']):
-                score_dia += 1; detalhes.append("P")
+        else:
+            # Para o passado, usamos a lógica simplificada (sem intraday)
+            score_dia = 0
+            detalhes = []
+            trend = "Lateral"
             
-        # 4. Semanal (Aproximado)
-        try:
-            date_lookup = date_curr.replace(tzinfo=None)
-            w_idx = df_w.index.get_indexer([date_lookup], method='pad')[0]
-            if w_idx != -1 and score_dia >= 2:
-                w_row = df_w.iloc[w_idx]
-                if (trend == "Alta" and row['Close'] > row['EMA21'] and w_row['Close'] > w_row['EMA21']) or \
-                   (trend == "Baixa" and row['Close'] < row['EMA21'] and w_row['Close'] < w_row['EMA21']):
-                    score_dia += 1; detalhes.append("W")
-        except: pass
+            # 1. Tendência
+            if (row['Close'] > row['EMA21']) and (row['EMA21'] > row['SMA50']): 
+                score_dia += 2; trend = "Alta"; detalhes.append("T")
+            elif (row['Close'] < row['EMA21']) and (row['EMA21'] < row['SMA50']): 
+                score_dia += 2; trend = "Baixa"; detalhes.append("T")
             
-        # Classificação Visual
+            # 2. MACD
+            if score_dia > 0:
+                if (trend == "Alta" and row['MACD'] > row['MACD_Signal']) or \
+                   (trend == "Baixa" and row['MACD'] < row['MACD_Signal']):
+                    score_dia += 1; detalhes.append("M")
+            
+            # 3. Price Action
+            if score_dia > 0:
+                if (trend == "Alta" and row['Close'] > row['Resistencia_Hist']) or \
+                   (trend == "Baixa" and row['Close'] < row['Suporte_Hist']):
+                    score_dia += 1; detalhes.append("P")
+            
+            # 4. Semanal
+            try:
+                date_lookup = date_curr.replace(tzinfo=None)
+                w_idx = df_w.index.get_indexer([date_lookup], method='pad')[0]
+                if w_idx != -1 and score_dia >= 2:
+                    w_row = df_w.iloc[w_idx]
+                    if (trend == "Alta" and row['Close'] > row['EMA21'] and w_row['Close'] > w_row['EMA21']) or \
+                       (trend == "Baixa" and row['Close'] < row['EMA21'] and w_row['Close'] < w_row['EMA21']):
+                        score_dia += 1; detalhes.append("W")
+            except: pass
+            
         status = "Neutro"
         if score_dia >= 5: status = "🟢 Forte"
         elif score_dia >= 3: status = "🟡 Observação"
@@ -353,10 +358,8 @@ def gerar_tabela_backtest(df_d, df_w, ticker):
             "Confirmações": " ".join(detalhes)
         })
         
-    # Cria DF e inverte para o mais recente ficar em cima
     df_hist = pd.DataFrame(history_data)
-    df_hist = df_hist.iloc[::-1].head(20) # Últimos 20 dias
-    
+    df_hist = df_hist.iloc[::-1].head(20) 
     return df_hist
 
 # ================= INTERFACE =================
@@ -464,7 +467,7 @@ if st.session_state.analise_realizada:
             d_ativo = next(i for i in st.session_state.dados_analise if i["Ativo"] == escolha)
             w, d, h = d_ativo['analise_w'], d_ativo['analise_d'], d_ativo['analise_120']
             
-            # ABAS COM TABELA DE BACKTEST
+            # ABAS
             tab_relatorio, tab_score, tab_data, tab_chart, tab_backtest = st.tabs([
                 "📋 Relatório IA", "📝 Scorecard", "🔢 Dados Estruturais", "📊 Gráfico", "🔙 Backtest (20d)"
             ])
@@ -511,21 +514,16 @@ if st.session_state.analise_realizada:
             
             with tab_backtest:
                 st.markdown("#### ⏳ Histórico de Pontuação (Últimos 20 Pregões)")
-                st.caption("Evolução do Score dia a dia para validação do setup (T=Trend, M=MACD, P=PriceAction, W=Weekly).")
-                df_bt = gerar_tabela_backtest(d_ativo['df_chart_d'], d_ativo['df_chart_w'], escolha)
+                st.caption("Evolução do Score dia a dia para validação do setup (T=Trend, M=MACD, P=PriceAction, W=Weekly, I=Intraday).")
+                # Passamos o d_ativo completo para injetar o HOJE corretamente
+                df_bt = gerar_tabela_backtest(d_ativo['df_chart_d'], d_ativo['df_chart_w'], d_ativo)
                 
-                # Configuração Visual da Tabela (Streamlit Column Config)
                 st.dataframe(
                     df_bt, 
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
                         "Preço": st.column_config.NumberColumn(format="R$ %.2f"),
-                        "Score": st.column_config.ProgressColumn(
-                            "Força do Sinal", 
-                            min_value=0, 
-                            max_value=5, 
-                            format="%d/5"
-                        )
+                        "Score": st.column_config.ProgressColumn("Força do Sinal", min_value=0, max_value=6, format="%d/6")
                     }
                 )

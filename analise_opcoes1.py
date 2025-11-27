@@ -361,7 +361,6 @@ if st.session_state.analise_realizada:
                 st.markdown(relatorio)
                 # Correção da concatenação do texto do Plano Sugerido
                 st.info(f"**Plano Sugerido:** Entrada próxima a R$ {d_ativo['Preço']:.2f}, buscando Alvo em R$ {d_ativo['Alvo']:.2f} com proteção em R$ {d_ativo['Stop_Tecnico']:.2f}.")
-
             with tab_score:
                 st.markdown("#### 🎯 Métricas Operacionais")
                 m1, m2, m3, m4 = st.columns(4)
